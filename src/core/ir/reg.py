@@ -1,3 +1,4 @@
+from .type_enum import PtxType
 from .value import Value
 
 
@@ -17,7 +18,7 @@ class VirtualRegister(Register):
     """An allocated register: unlimited in PTX, mapped to hardware registers by ptxas."""
 
     PREFIX = None      # name stem, e.g. "f" -> %f0, %f1, ...
-    PTX_TYPE = None    # declared type in `.reg <PTX_TYPE> %<PREFIX><N>;`
+    PTX_TYPE = None    # declared type in `.reg .<PTX_TYPE> %<PREFIX><N>;`
 
     def __init__(self, idx):
         super().__init__(f"{self.PREFIX}{idx}")
@@ -25,31 +26,31 @@ class VirtualRegister(Register):
 
 
 class PRegister(VirtualRegister):
-    PREFIX, PTX_TYPE = "p", ".pred"      # setp results, @%p guards
+    PREFIX, PTX_TYPE = "p", PtxType.PRED     # setp results, @%p guards
 
 
 class RSRegister(VirtualRegister):
-    PREFIX, PTX_TYPE = "rs", ".b16"      # 16-bit integers
+    PREFIX, PTX_TYPE = "rs", PtxType.B16     # 16-bit integers
 
 
 class HRegister(VirtualRegister):
-    PREFIX, PTX_TYPE = "h", ".f16"       # half floats
+    PREFIX, PTX_TYPE = "h", PtxType.F16      # half floats
 
 
 class RRegister(VirtualRegister):
-    PREFIX, PTX_TYPE = "r", ".b32"       # 32-bit ints; .b32 serves both .s32 and .u32 ops
+    PREFIX, PTX_TYPE = "r", PtxType.B32      # 32-bit ints; .b32 serves both .s32 and .u32 ops
 
 
 class RDRegister(VirtualRegister):
-    PREFIX, PTX_TYPE = "rd", ".b64"      # 64-bit ints and addresses
+    PREFIX, PTX_TYPE = "rd", PtxType.B64     # 64-bit ints and addresses
 
 
 class FRegister(VirtualRegister):
-    PREFIX, PTX_TYPE = "f", ".f32"
+    PREFIX, PTX_TYPE = "f", PtxType.F32
 
 
 class FDRegister(VirtualRegister):
-    PREFIX, PTX_TYPE = "fd", ".f64"
+    PREFIX, PTX_TYPE = "fd", PtxType.F64
 
 
 class SpecialRegister(Register):
@@ -62,15 +63,15 @@ CTAID_X = SpecialRegister("ctaid.x")
 LANEID = SpecialRegister("laneid")
 
 
-# value dtype (IR / meta.json spelling, or a PTX type suffix) -> register class
-DTYPE_TO_CLASS = {
-    "pred": PRegister,
-    "i16": RSRegister, "s16": RSRegister, "u16": RSRegister, "b16": RSRegister,
-    "f16": HRegister,
-    "i32": RRegister, "s32": RRegister, "u32": RRegister, "b32": RRegister,
-    "i64": RDRegister, "s64": RDRegister, "u64": RDRegister, "b64": RDRegister,
-    "f32": FRegister,
-    "f64": FDRegister,
+# value type -> register class; signedness lives on instructions, not registers
+TYPE_TO_CLASS = {
+    PtxType.PRED: PRegister,
+    PtxType.B16: RSRegister, PtxType.S16: RSRegister, PtxType.U16: RSRegister,
+    PtxType.F16: HRegister,
+    PtxType.B32: RRegister, PtxType.S32: RRegister, PtxType.U32: RRegister,
+    PtxType.F32: FRegister,
+    PtxType.B64: RDRegister, PtxType.S64: RDRegister, PtxType.U64: RDRegister,
+    PtxType.F64: FDRegister,
 }
 
 
@@ -80,12 +81,13 @@ class RegisterFile:
     def __init__(self):
         self.counts = {}   # register class -> number allocated so far
 
-    def new(self, dtype):
-        cls = DTYPE_TO_CLASS[dtype]
+    def new(self, ptx_type):
+        # PtxType(...) also accepts an exact spelling like "f32" but rejects typos and "i32"
+        cls = TYPE_TO_CLASS[PtxType(ptx_type)]
         idx = self.counts.get(cls, 0)
         self.counts[cls] = idx + 1
         return cls(idx)
 
     def declarations(self):
         # `%f<N>` declares %f0 .. %f(N-1)
-        return [f".reg {cls.PTX_TYPE} %{cls.PREFIX}<{n}>;" for cls, n in self.counts.items()]
+        return [f".reg .{cls.PTX_TYPE} %{cls.PREFIX}<{n}>;" for cls, n in self.counts.items()]

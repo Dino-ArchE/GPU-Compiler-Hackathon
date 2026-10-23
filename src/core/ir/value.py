@@ -1,5 +1,7 @@
 import struct
 
+from .type_enum import PtxType
+
 
 class Value:
     """Anything an instruction can take as an operand. str() is its PTX spelling.
@@ -18,14 +20,14 @@ class Value:
 class Immediate(Value):
     """A literal operand; floats print as PTX hex bit patterns (1.0 -> 0f3F800000)."""
 
-    def __init__(self, value, dtype):
+    def __init__(self, value, ptx_type):
         self.value = value
-        self.dtype = dtype
+        self.ptx_type = PtxType(ptx_type)
 
     def __str__(self):
-        if self.dtype == "f32":
+        if self.ptx_type is PtxType.F32:
             return "0f%08X" % struct.unpack("<I", struct.pack("<f", self.value))[0]
-        if self.dtype == "f64":
+        if self.ptx_type is PtxType.F64:
             return "0d%016X" % struct.unpack("<Q", struct.pack("<d", self.value))[0]
         return str(int(self.value))
 
@@ -38,6 +40,17 @@ class Symbol(Value):
 
     def __str__(self):
         return self.name
+
+
+class Param(Symbol):
+    """A kernel parameter: a slot in .param space, read with ld.param.
+
+    The prefix keeps buffer names like `add` or `max` off PTX keywords.
+    """
+
+    def __init__(self, name, ptx_type=PtxType.U64):
+        super().__init__(f"param_{name}")
+        self.ptx_type = PtxType(ptx_type)   # u64 for buffer pointers
 
 
 class Address(Value):
