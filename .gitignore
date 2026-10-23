@@ -1,6 +1,9 @@
 __pycache__/
 *.pyc
 .DS_Store
+.claude/
+.venv/
+.idea/
 
 # organizer-only evaluation material
 hidden/
