@@ -88,9 +88,11 @@ def _corners(a, b, f):
 
 
 class ValueRanges:
-    def __init__(self, function, defuse):
+    def __init__(self, function, defuse, module=None):
         self.function = function
         self.du = defuse
+        # shared arrays are aligned as declared
+        self.symbol_align = {sym: align for sym, align, _ in module.shared} if module else {}
         self.memo = {}
         self.busy = set()
         grid, block = function.launch_grid, function.launch_block
@@ -143,9 +145,14 @@ class ValueRanges:
 
     def address_align(self, addr):
         """Power of two dividing the byte address [base+offset] (global/param buffers)."""
-        base = addr.base
-        a = PARAM_ALIGN if isinstance(base, Param) else self.align(base, PtxType.U64)
-        return min(a, lowbit(addr.offset))
+        return min(self.base_align(addr.base), lowbit(addr.offset))
+
+    def base_align(self, base):
+        if isinstance(base, Param):
+            return PARAM_ALIGN
+        if base in self.symbol_align:
+            return self.symbol_align[base]
+        return self.align(base, PtxType.U64)
 
     # ------------------------------------------------------------------ transfer functions
 
@@ -162,6 +169,8 @@ class ValueRanges:
             return top(t) if is_int(t) else None
         if op is Op.CVTA:
             return top(t, self.align(inst.srcs[0], t))
+        if op is Op.MOV and inst.srcs[0] in self.symbol_align:
+            return top(t, self.symbol_align[inst.srcs[0]])
         if not is_int(t):
             return None
 
@@ -225,4 +234,4 @@ class RangeAnalysis(Analysis):
     name = "ranges"
 
     def run(self, function, am):
-        return ValueRanges(function, am.get("defuse"))
+        return ValueRanges(function, am.get("defuse"), am.module)

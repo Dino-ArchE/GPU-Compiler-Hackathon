@@ -1,4 +1,4 @@
-from core.ir import Address, Instruction, Op, Register, StateSpace, Vector
+from core.ir import Address, Instruction, Op, Register, StateSpace, Symbol, Vector
 
 from ..pass_manager import CFG_ANALYSES, FunctionPass, register_pass
 
@@ -19,6 +19,9 @@ class VectorizeMemory(FunctionPass):
     them there may be no barrier or access to the same state space that could alias (loads from
     read-only buffers excepted), no read of a moved load's result, and no write of a moved
     store's value. Each element register must be single-def.
+
+    A shared array is ours to declare: when its declared alignment is the only obstacle,
+    the declaration is raised (`.align 4` -> `.align 16`) instead of giving up.
     """
 
     name = "vectorize-mem"
@@ -26,6 +29,7 @@ class VectorizeMemory(FunctionPass):
 
     def run(self, function, am):
         self.du, self.ranges, self.mem = am.get("defuse"), am.get("ranges"), am.get("memory")
+        self.module = am.module
         changed = False
         for block in function.blocks:
             while self.vectorize_once(block):
@@ -72,7 +76,8 @@ class VectorizeMemory(FunctionPass):
         offsets = [off + i * nbytes for i in range(width)]
         if any(o not in by_offset for o in offsets):
             return None
-        if self.ranges.address_align(Address(base, off)) < width * nbytes:
+        need = width * nbytes
+        if self.ranges.address_align(Address(base, off)) < need and not self.raise_align(base, off, need):
             return None
         run = [by_offset[o] for o in offsets]
         positions = sorted(k for k, _ in run)
@@ -97,6 +102,17 @@ class VectorizeMemory(FunctionPass):
                 if isinstance(v, Register) and any(v in i.defs() for i in insts[k + 1:hi + 1]):
                     return None
         return run
+
+    def raise_align(self, base, off, need):
+        """Re-declare shared array `base` with alignment `need` if that makes [base+off] aligned."""
+        if self.module is None or not isinstance(base, Symbol) or off % need:
+            return False
+        for k, (sym, align, nbytes) in enumerate(self.module.shared):
+            if sym is base:
+                self.module.shared[k] = (sym, max(align, need), nbytes)
+                self.ranges.symbol_align[sym] = max(align, need)
+                return True
+        return False
 
     def rewrite(self, block, key, run):
         op, types, base = key

@@ -65,10 +65,12 @@ class FunctionPass:
 
 
 class AnalysisManager:
-    """Per-function cache of analysis results."""
+    """Per-function cache of analysis results. `module` gives passes the module-level state
+    (shared array declarations); it may be None for a function analysed on its own."""
 
-    def __init__(self, function):
+    def __init__(self, function, module=None):
         self.function = function
+        self.module = module
         self.cache = {}
 
     def get(self, name):
@@ -128,7 +130,7 @@ class PassManager:
     def run(self, module):
         changed = False
         for function in module.functions:
-            am = AnalysisManager(function)
+            am = AnalysisManager(function, module)
             changed |= self._run_items(self.pipeline, function, am)
         return changed
 

@@ -22,6 +22,11 @@ class VerifyError(Exception):
     pass
 
 
+def _bitcast_mov(inst, d, t):
+    """mov.b32 %f1, %r1 (and back) reinterprets bits between same-width registers: legal PTX."""
+    return inst.op is Op.MOV and t.value.startswith("b") and d.PTX_TYPE.nbytes == t.nbytes
+
+
 def verify(function, after="?"):
     def fail(msg):
         raise VerifyError(f"after {after}: {function.name}: {msg}")
@@ -53,7 +58,8 @@ def verify(function, after="?"):
                 fail(f"{inst!r}: special registers can only be read by mov")
             if inst.op in SAME_TYPE_DST and "wide" not in inst.types and len(inst.dsts) == 1:
                 d, t = inst.dsts[0], inst.ptx_type
-                if t is not None and isinstance(d, Register) and type(d) is not TYPE_TO_CLASS[t]:
+                if t is not None and isinstance(d, Register) and type(d) is not TYPE_TO_CLASS[t] \
+                        and not _bitcast_mov(inst, d, t):
                     fail(f"{inst!r}: dst {d} has the wrong register class for .{t}")
             if inst.op in SAME_TYPE_DST and inst.op not in (Op.MOV, Op.SELP) and "wide" not in inst.types:
                 t = inst.ptx_type

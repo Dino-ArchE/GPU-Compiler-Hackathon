@@ -49,22 +49,27 @@ def ops(function):
 
 def differential(build, passes, inputs, outputs, rtol=1e-6, atol=1e-6):
     """Build a fresh function twice, run `passes` on one copy, interpret both, compare outputs.
-    `build()` returns a Function. Returns the optimized function for further assertions."""
+    `build()` returns a Function (or a Module, when it declares shared arrays). Returns the
+    optimized function for further assertions."""
     import numpy as np
     from interp import run_kernel
 
     def module_of(f):
+        if isinstance(f, Module):
+            return f
         m = Module()
         m.add_function(f)
         return m
 
     ref = run_kernel(module_of(build()), inputs, {k: v.copy() for k, v in outputs.items()})
-    opt = build()
-    run(opt, *passes)
-    got = run_kernel(module_of(opt), inputs, {k: v.copy() for k, v in outputs.items()})
+    opt_module = module_of(build())
+    opt = opt_module.functions[0]
+    PassManager(list(passes), verify=True).run(opt_module)
+    verify(opt, after="test")
+    got = run_kernel(opt_module, inputs, {k: v.copy() for k, v in outputs.items()})
     for name in ref:
         np.testing.assert_allclose(got[name], ref[name], rtol=rtol, atol=atol)
-    assemble(module_of(opt))
+    assemble(opt_module)
     return opt
 
 
