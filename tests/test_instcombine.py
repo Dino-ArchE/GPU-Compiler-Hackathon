@@ -93,3 +93,18 @@ def test_float_add_zero_kept():
 def test_div_by_non_power_of_two_kept():
     f = check(lambda b, g, v: b.binary(Op.DIV, F, v, fl(3.0), mode="rn"), F)
     assert "div.rn.f32" in ops(f)
+
+
+def test_constant_hoisted_out_of_inner_add():
+    """g + (v + 5) -> (g + v) + 5: the constant ends up outermost, ready for addr-fold."""
+    f = check(lambda b, g, v: b.add(S, g, b.add(S, v, i(5))))
+    adds = [inst for _, inst in f.instructions() if inst.op is Op.ADD and inst.ptx_type is S]
+    assert len(adds) == 2 and isinstance(adds[-1].srcs[1], Immediate) and adds[-1].srcs[1].value == 5
+
+
+def test_constant_not_hoisted_when_inner_add_is_shared():
+    def body(b, g, v):
+        inner = b.add(S, v, i(5))
+        return b.mul(S, b.add(S, g, inner), inner)
+    f = check(body)
+    assert sum(1 for o in ops(f) if o == "add.s32") == 2

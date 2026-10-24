@@ -21,6 +21,8 @@ class InstCombine(FunctionPass):
                    x/2^k -> x*2^-k (same correctly rounded result)
     reassociate    (x+c1)+c2 -> x+(c1+c2),  (x*c1)*c2 -> x*(c1*c2),  (x<<a)<<b -> x<<(a+b)
                    when the inner result is a single-def register (x must hold one value too)
+    hoist          a+(b+c) -> (a+b)+c: the constant moves outward, where addr-fold turns it
+                   into an [addr+imm] offset and CSE shares a+b (the inner add has one reader)
 
     Integer identities hold in wrap-around arithmetic, so no range facts are needed. Float
     rewrites skip .ftz/.sat/.approx forms, whose results these identities don't describe.
@@ -33,6 +35,9 @@ class InstCombine(FunctionPass):
         self.du = am.get("defuse")
         changed = False
         for block in function.blocks:
+            for inst in list(block.instructions):
+                if inst.op is Op.ADD and is_int(inst.ptx_type) and inst.guard is None:
+                    changed |= self.hoist_constant(function, block, inst)
             for k, inst in enumerate(block.instructions):
                 if inst.has_side_effects or len(inst.dsts) != 1:
                     continue
@@ -102,6 +107,30 @@ class InstCombine(FunctionPass):
         if op is Op.SUB and x is s[1] and isinstance(x, Register):
             return _mov(d, t, Immediate(0, t))
         return self.reassociate(inst, t, b)
+
+    def hoist_constant(self, function, block, inst):
+        t, d = inst.ptx_type, inst.dsts[0]
+        if self.du.single_def(d) is not inst:
+            return False
+        for k in (0, 1):
+            a, inner_d = inst.srcs[1 - k], inst.srcs[k]
+            if not isinstance(inner_d, Register) or not isinstance(a, Register) or not self.du.is_ssa(a):
+                continue
+            inner = self.du.single_def(inner_d)
+            if inner is None or inner.op is not Op.ADD or inner.types != inst.types \
+                    or self.du.uses_of(inner_d) != [inst]:
+                continue
+            b, c = inner.srcs
+            if _imm(b):
+                b, c = c, b
+            if not _imm(c) or _imm(b) or not self.du.is_ssa(b):
+                continue
+            ab = function.regs.new(t)
+            self.du.defs[ab] = [block.insert_before(inst, Instruction(Op.ADD, (t,), [ab], [a, b]))]
+            self.du.uses[ab] = [inst]
+            inst.srcs = (ab, c)
+            return True
+        return False
 
     def reassociate(self, inst, t, c2):
         op, s, d = inst.op, inst.srcs, inst.dsts[0]
