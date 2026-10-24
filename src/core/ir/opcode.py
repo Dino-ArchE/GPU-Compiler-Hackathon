@@ -50,3 +50,14 @@ class Op(StrEnum):
     # atomics
     RED = "red"
     ATOM = "atom"
+
+
+class Cmp(StrEnum):
+    """setp comparison operators: setp.<cmp>.<type>. Signedness/float-ness come from the type."""
+
+    EQ = "eq"
+    NE = "ne"
+    LT = "lt"
+    LE = "le"
+    GT = "gt"
+    GE = "ge"

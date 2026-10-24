@@ -1,15 +1,41 @@
 import math
 
-from core.ir import Builder, Function, Module, Op, PtxType, StateSpace
+from core.ir import (
+    CTAID_X, NTID_X, TID_X, Address, Builder, Cmp, Function, Immediate, Load, Module, Op, PtxType,
+    StateSpace, Vector,
+)
 from core.visitor import Buffer, KernelVisitor, SymbolTable
+
+from .ops import lower_elementwise
 
 
 # Smem.dtype uses C spellings
 SMEM_TYPES = {"float": PtxType.F32, "half": PtxType.F16, "double": PtxType.F64, "int": PtxType.S32}
 
+# Index arithmetic (Load/Write indices, Cond) is 32-bit signed, like the reference .cu's `int`.
+INDEX_TYPE = PtxType.S32
+
+# BinaryExpr operators on indices
+INDEX_ARITH = {"+": Op.ADD, "-": Op.SUB, "*": Op.MUL, "/": Op.DIV, "%": Op.REM}
+INDEX_CMP = {"<": Cmp.LT, "<=": Cmp.LE, ">": Cmp.GT, ">=": Cmp.GE, "==": Cmp.EQ, "!=": Cmp.NE}
+
+
+def _fold(op, a, b):
+    """Constant-fold two int literals with C semantics (/ and % truncate toward zero)."""
+    if op == "/":
+        return int(a / b)
+    if op == "%":
+        return a - int(a / b) * b
+    return {"+": a + b, "-": a - b, "*": a * b}[op]
+
 
 class CodeGen(KernelVisitor):
-    """Lowers one kernel's Kernel IR into our IR: a Module holding one Function."""
+    """Lowers one kernel's Kernel IR into our IR: a Module holding one Function.
+
+    Statement visitors (Tile, Load, Assign, Write, ...) emit instructions and return nothing.
+    Expression visitors (Var, Literal, BinaryExpr) return the Value holding their result
+    (a Register, or an Immediate for literals) so the parent can use it as an operand.
+    """
 
     def __init__(self, kernel):
         super().__init__(kernel)
@@ -18,10 +44,13 @@ class CodeGen(KernelVisitor):
         self.function = self.module.add_function(Function(kernel.name, [a.name for a in kernel.args]))
         self.builder = Builder(self.function)
         self.sym_table = SymbolTable()
+        # where guarded-off threads jump; placed last so `ret` is the kernel's only exit
+        self.exit = self.builder.new_block("EXIT")
 
     def gen(self):
         self.prologue()
         self.visit(self.kernel.body)
+        self.builder.set_block(self.exit)
         self.builder.inst(Op.RET)
         return self.module
 
@@ -36,38 +65,97 @@ class CodeGen(KernelVisitor):
             buffer = Buffer(StateSpace.GLOBAL, base, arg.shape, PtxType.from_meta(arg.dtype))
             self.sym_table.define_buffer(arg.name, buffer)
 
-    def visit_Tile(self, tile):
-        axes = tile.axes
+    # ------------------------------------------------------------------ statements
 
-        # We need to populate each axis as a entry
-        for child in tile.body:
-            self.visit(child)
+    def visit_Tile(self, tile):
+        """One thread per point of the axes' iteration space.
+
+        1. gid = ctaid.x * ntid.x + tid.x                        (mad.lo.s32)
+        2. guard, only if N < grid*block (N = prod of axis extents):
+               p = builder.setp(Cmp.GE, INDEX_TYPE, gid, N) ; builder.bra(self.exit, guard=p)
+           the body falls through; gen() places self.exit (holding `ret`) last.
+        3. decode gid into the axes, row-major mixed radix, and define_scalar each axis name.
+           One axis (all of p*): the axis is gid itself, no div/rem.
+        4. visit the body.
+        """
+        b = self.builder
+        ctaid, ntid, tid = (b.mov(PtxType.U32, sreg) for sreg in (CTAID_X, NTID_X, TID_X))
+        gid = b.mad(INDEX_TYPE, ctaid, ntid, tid)
+
+        extents = [axis.extent.as_static() for axis in tile.axes]
+        n = math.prod(extents)
+        if n < math.prod(self.kernel.grid) * math.prod(self.kernel.block):
+            outside = b.setp(Cmp.GE, INDEX_TYPE, gid, Immediate(n, INDEX_TYPE))
+            b.bra(self.exit, guard=outside)
+
+        # peel axes off the end: last = rest % ext, rest /= ext, ...; the first axis is what's left
+        rest = gid
+        for axis, ext in zip(reversed(tile.axes[1:]), reversed(extents[1:])):
+            ext = Immediate(ext, INDEX_TYPE)
+            self.sym_table.define_scalar(axis.name, b.binary(Op.REM, INDEX_TYPE, rest, ext))
+            rest = b.binary(Op.DIV, INDEX_TYPE, rest, ext)
+        self.sym_table.define_scalar(tile.axes[0].name, rest)
+
+        self.visit(tile.body)
+
+    def visit_Load(self, load):
+        """names = load input[index]: buffer element(s) -> scalar register(s).
+
+        len(names) == 1 -> ld.<space>.<type>;  2 or 4 -> ld.<space>.v2|v4.<type> into a Vector,
+        consecutive elements starting at `index` (p* only has single-name loads).
+        Each name in load.names is defined as a scalar.
+        """
+        if len(load.names) not in (1, 2, 4):
+            raise NotImplementedError(f"Load of {len(load.names)} values from {load.input}")
+        buffer = self.sym_table.buffer(load.input)
+        addr = self.address(buffer, load.index)
+        dsts = [self.builder.reg(buffer.elem_type) for _ in load.names]
+        dst = dsts[0] if len(dsts) == 1 else Vector(dsts)
+        self.builder.append(Load(buffer.space, buffer.elem_type, dst, addr))
+        for name, reg in zip(load.names, dsts):
+            self.sym_table.define_scalar(name, reg)
+
+    def visit_Assign(self, assign):
+        """f32 name = op(args...): elementwise math on scalars.
+
+        assign.op is an ElementwiseImpl; dispatch on assign.op.name through a table
+        (add -> add.f32, multiply -> mul.f32, relu -> max.f32 x, 0, ...). Result type from
+        assign.dtype. Defines assign.name as a scalar.
+        """
+        args = [self.operand(arg) for arg in assign.args]
+        ptx_type = PtxType.from_meta(assign.dtype.name)
+        result = lower_elementwise(self.builder, assign.op.name, ptx_type, args)
+        self.sym_table.define_scalar(assign.name, result)
+
+    def visit_Write(self, write):
+        """output[index] = values: scalar register(s) -> buffer element(s).
+
+        len(values) == 1 -> st.<space>.<type>;  2 or 4 -> st.<space>.v2|v4.<type> {..} at `index`
+        (p00/p01 store v2, p02/p03 store v4). write.atomic -> red.global.add (reductions, later).
+        """
+        # the vector form assumes values are consecutive elements; PTX only has v2/v4
+        if len(write.values) not in (1, 2, 4):
+            raise NotImplementedError(f"Write of {len(write.values)} values to {write.output}")
+        if write.atomic:
+            raise NotImplementedError(f"atomic Write to {write.output}")
+        buffer = self.sym_table.buffer(write.output)
+        addr = self.address(buffer, write.index)
+        srcs = [self.operand(v) for v in write.values]
+        src = srcs[0] if len(srcs) == 1 else Vector(srcs)
+        self.builder.store(buffer.space, buffer.elem_type, addr, src)
 
     def visit_StridedLoop(self, loop):
         for body in loop.body:
             self.visit(body)
 
-    def visit_Var(self, var):
-        name = var.name
-        val = self.sym_table.buffer(name)
-        return val
-
-    def visit_Load(self, load):
-        input_ = load.input
-        # Find the value of input_ in the symbol table
-        val = self.sym_table.scalar(input_)
-        reg = self.builder.reg(PtxType.from_meta(load.dtype))
-        dest = self.sym_table.define_scalar(load.name, reg)
-
-
-    def visit_Write(self, write):
-        ...
-
     def visit_Accum(self, accum):
-        ...
+        raise NotImplementedError("Accum")
 
     def visit_WarpShuffle(self, shuffle):
-        ...
+        raise NotImplementedError("WarpShuffle")
+
+    def visit_TreeHalve(self, halve):
+        raise NotImplementedError("TreeHalve")
 
     def visit_Smem(self, smem):
         """Declares a shared array (printed at module scope); emits no instructions."""
@@ -78,27 +166,77 @@ class CodeGen(KernelVisitor):
 
     def visit_Cond(self, cond):
         self.visit_BinaryExpr(cond.cond)
-
-    def visit_BinaryExpr(self, binary):
-        left_val = self.visit(binary.left)
-        right_val = self.visit(binary.right)
-        match binary.op:
-            case '+':
-                ...
-            case '*':
-                ...
-            case _:
-                ...
-
-
-    def visit_Literal(self, literal):
-        self.builder
+        raise NotImplementedError("Cond")
 
     def visit_Sync(self, sync):
         self.builder.sync(sync.barrier_id)
 
-    def visit_TreeHalve(self, halve):
-        ...
+    # ------------------------------------------------------------------ expressions
 
-    def visit_Assign(self, assign):
-        name = assign.name # This is the target
+    def visit_Var(self, var):
+        """A name in an index expression -> its scalar Register (an axis like a0, or lane/warp)."""
+        return self.sym_table.scalar(var.name)
+
+    def visit_Literal(self, literal):
+        """An index constant -> Immediate(value, INDEX_TYPE). Emits nothing."""
+        if literal.dtype != "int":
+            raise NotImplementedError(f"{literal.dtype} literal in an index expression")
+        return Immediate(literal.value, INDEX_TYPE)
+
+    def visit_BinaryExpr(self, binary):
+        """Integer index math: lower both sides, emit one op, return its result Register.
+
+        Seen so far: + * (p*), / % - == < (later categories). Comparisons return a predicate.
+        """
+        left, right = self.visit(binary.left), self.visit(binary.right)
+        if binary.op in INDEX_CMP:
+            return self.builder.setp(INDEX_CMP[binary.op], INDEX_TYPE, left, right)
+        if binary.op not in INDEX_ARITH:
+            raise NotImplementedError(f"index operator {binary.op!r}")
+        # PTX needs at least one register operand, so two literals are folded here
+        if isinstance(left, Immediate) and isinstance(right, Immediate):
+            return Immediate(_fold(binary.op, left.value, right.value), INDEX_TYPE)
+        if binary.op == "*":
+            return self.builder.mul(INDEX_TYPE, left, right)
+        return self.builder.binary(INDEX_ARITH[binary.op], INDEX_TYPE, left, right)
+
+    # ------------------------------------------------------------------ helpers
+
+    def address(self, buffer, index):
+        """Kernel IR index tuple -> Address of that element in `buffer`.
+
+        flat = sum(idx_i * stride_i) (row-major; an empty index means 0), then
+        global: Address(base + mul.wide(flat, elem_bytes));  shared: the same from the Symbol.
+        Shared by Load and Write.
+        """
+        flat = None
+        for idx, stride in zip(index, buffer.strides):
+            term = self.visit(idx)
+            if stride != 1:
+                term = self.mul_index(term, stride)
+            flat = term if flat is None else self.add_index(flat, term)
+
+        nbytes = buffer.elem_type.nbytes
+        # constant index (or none): the byte offset goes straight into [base+off]
+        if flat is None or isinstance(flat, Immediate):
+            return Address(buffer.base, 0 if flat is None else flat.value * nbytes)
+        b = self.builder
+        base = buffer.base if buffer.space is StateSpace.GLOBAL else b.mov(PtxType.U64, buffer.base)
+        offset = b.mul_wide(flat, Immediate(nbytes, INDEX_TYPE))
+        return Address(b.add(PtxType.S64, base, offset))
+
+    def mul_index(self, value, k):
+        if isinstance(value, Immediate):
+            return Immediate(value.value * k, INDEX_TYPE)
+        return self.builder.mul(INDEX_TYPE, value, Immediate(k, INDEX_TYPE))
+
+    def add_index(self, a, b):
+        if isinstance(a, Immediate) and isinstance(b, Immediate):
+            return Immediate(a.value + b.value, INDEX_TYPE)
+        return self.builder.add(INDEX_TYPE, a, b)
+
+    def operand(self, name_or_expr):
+        """An Assign/Write argument: a scalar's name, or (defensively) an expression node."""
+        if isinstance(name_or_expr, str):
+            return self.sym_table.scalar(name_or_expr)
+        return self.visit(name_or_expr)

@@ -1,4 +1,4 @@
-from .opcode import Op
+from .opcode import Cmp, Op
 from .reg import Register
 from .type_enum import PtxType
 from .value import Address, Immediate, Vector
@@ -99,3 +99,25 @@ class Binary(Instruction):
     def __init__(self, op, ptx_type, dst, a, b, mode=None, **kw):
         types = (mode, ptx_type) if mode else (ptx_type,)
         super().__init__(op, types, dsts=[dst], srcs=[a, b], **kw)
+
+
+class Unary(Instruction):
+    """<op>[.mode].<type> dst, a: neg, abs, rcp, sqrt, ex2, ... (mode: rn, approx, ...)"""
+
+    def __init__(self, op, ptx_type, dst, a, mode=None, **kw):
+        types = (mode, ptx_type) if mode else (ptx_type,)
+        super().__init__(op, types, dsts=[dst], srcs=[a], **kw)
+
+
+class Setp(Instruction):
+    """setp.<cmp>.<type> p, a, b: compare, writing a predicate register."""
+
+    def __init__(self, cmp, ptx_type, dst, a, b, **kw):
+        super().__init__(Op.SETP, (Cmp(cmp), ptx_type), dsts=[dst], srcs=[a, b], **kw)
+
+
+class Bra(Instruction):
+    """[@p] bra target: jump to a BasicBlock; unconditional without a guard."""
+
+    def __init__(self, target, **kw):
+        super().__init__(Op.BRA, (), srcs=[target], **kw)

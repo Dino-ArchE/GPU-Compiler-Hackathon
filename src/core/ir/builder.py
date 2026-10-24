@@ -1,4 +1,4 @@
-from .instruction import Binary, Cvta, Instruction, Load, Mov, Store, Sync
+from .instruction import Binary, Bra, Cvta, Instruction, Load, Mov, Setp, Store, Sync, Unary
 from .opcode import Op
 from .type_enum import PtxType, StateSpace
 from .value import Address
@@ -74,8 +74,30 @@ class Builder:
         """Integer mul must say which half it keeps: mul.lo (same width). Float mul has no mode."""
         return self.binary(Op.MUL, ptx_type, a, b, mode=None if ptx_type.is_float else "lo")
 
+    def mad(self, ptx_type, a, b, c):
+        """a * b + c; integers keep the low half (mad.lo), like mul."""
+        dst = self.reg(ptx_type)
+        mode = () if ptx_type.is_float else ("lo",)
+        self.append(Instruction(Op.MAD, (*mode, ptx_type), dsts=[dst], srcs=[a, b, c]))
+        return dst
+
+    def unary(self, op, ptx_type, a, mode=None):
+        dst = self.reg(ptx_type)
+        self.append(Unary(op, ptx_type, dst, a, mode))
+        return dst
+
     def mul_wide(self, a, b, ptx_type=PtxType.S32):
         """32 x 32 -> 64 bit: turns an element index into a 64-bit byte offset."""
         dst = self.reg(PtxType.S64 if ptx_type is PtxType.S32 else PtxType.U64)
         self.append(Binary(Op.MUL, ptx_type, dst, a, b, mode="wide"))
         return dst
+
+    def setp(self, cmp, ptx_type, a, b):
+        """Compare a and b; returns the predicate register holding the result."""
+        dst = self.reg(PtxType.PRED)
+        self.append(Setp(cmp, ptx_type, dst, a, b))
+        return dst
+
+    def bra(self, target, guard=None, negate=False):
+        """Branch to `target`; with a guard, only where it holds (or fails, with negate)."""
+        return self.append(Bra(target, guard=guard, negate=negate))
