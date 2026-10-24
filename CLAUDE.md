@@ -77,7 +77,7 @@ src/core/opt/                optimizer over our IR (compile.py -O0|-O1|-O2, defa
                              ranges (interval + pow2 alignment, launch-aware), memory (pointer
                              roots, read-only buffers; distinct params assumed not to alias)
     passes/                  split-blocks, const-fold, instcombine, copy-prop, cse, dce,
-                             simplify-cfg, licm, launch-specialize, range-fold, addr-fold,
+                             simplify-cfg, licm, unroll, launch-specialize, range-fold, addr-fold,
                              strength-reduce, fast-math, vectorize-mem, fuse-mad, ld-nc
 tests/                       pytest; interp.py is a reference interpreter for our IR (threads as
                              coroutines, bar.sync/shfl supported). helpers.differential() runs a

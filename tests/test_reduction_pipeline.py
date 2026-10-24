@@ -88,8 +88,9 @@ def test_reduction_survives_pipeline(level):
     if level == 2:
         assert "rem.s32" not in o and "div.s32" not in o
         assert "ld.shared.v4.f32" in o                 # the 4 warp partials: one 16-byte load
-        loop = next(b for b in f.blocks if b.name.startswith("BODY"))
-        assert not any(i.op is Op.MUL and i.types == ("lo", S) for i in loop.instructions)
+        # the strided loop runs N / (BLOCKS*THREADS) = 4 trips in every thread: fully unrolled
+        assert not any(b.name.startswith("BODY") for b in f.blocks)
+        assert o.count("ld.global.nc.f32") == N // (BLOCKS * THREADS)
 
 
 def test_reference_value():

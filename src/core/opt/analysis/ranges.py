@@ -154,6 +154,11 @@ class ValueRanges:
             return self.symbol_align[base]
         return self.align(base, PtxType.U64)
 
+    def range_of(self, inst):
+        """Range of the value this one `inst` writes, even when its dst has other defs (a loop
+        counter's initial value), or None."""
+        return self._eval(inst)
+
     # ------------------------------------------------------------------ transfer functions
 
     def _eval(self, inst):
