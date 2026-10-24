@@ -222,6 +222,7 @@ class Mma(Instruction):
         B (col-major, tf32 in .b32): b0 (t, g)   b1 (t+4, g)
         C, D (f32):                  c0 (g, 2t)  c1 (g, 2t+1)  c2 (g+8, 2t)  c3 (g+8, 2t+1)
 
+    Verified on the hosted RTX 5090 by tools/mma_probe.py (bit-exact; a transposed B fails).
     .sync.aligned: all 32 lanes must execute the same mma, so it is never guarded per lane.
     D may be the same registers as C (accumulate in place).
     """
