@@ -41,3 +41,23 @@ def text(function):
 def ops(function):
     """Opcodes with modifiers, in layout order: ['mov.u32', 'add.s32', ...]."""
     return [".".join((i.op, *i.types)) for _, i in function.instructions()]
+
+
+def differential(build, passes, inputs, outputs, rtol=1e-6, atol=1e-6):
+    """Build a fresh function twice, run `passes` on one copy, interpret both, compare outputs.
+    `build()` returns a Function. Returns the optimized function for further assertions."""
+    import numpy as np
+    from interp import run_kernel
+
+    def module_of(f):
+        m = Module()
+        m.add_function(f)
+        return m
+
+    ref = run_kernel(module_of(build()), inputs, {k: v.copy() for k, v in outputs.items()})
+    opt = build()
+    run(opt, *passes)
+    got = run_kernel(module_of(opt), inputs, {k: v.copy() for k, v in outputs.items()})
+    for name in ref:
+        np.testing.assert_allclose(got[name], ref[name], rtol=rtol, atol=atol)
+    return opt
