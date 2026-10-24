@@ -6,7 +6,7 @@ Every pipeline starts with split-blocks: the analyses need a bra/ret to end its 
 from .pass_manager import Repeat
 
 # the scalar clean-up loop: each pass exposes work for the others, so run them to a fixed point
-SCALAR = Repeat(["const-fold", "instcombine", "copy-prop", "dce"])
+SCALAR = Repeat(["const-fold", "instcombine", "copy-prop", "cse", "dce"])
 
 PIPELINES = {
     0: [],
