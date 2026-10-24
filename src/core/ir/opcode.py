@@ -47,6 +47,8 @@ class Op(StrEnum):
     RET = "ret"
     BAR = "bar"
     SHFL = "shfl"
+    # tensor cores
+    MMA = "mma"
     # atomics
     RED = "red"
     ATOM = "atom"

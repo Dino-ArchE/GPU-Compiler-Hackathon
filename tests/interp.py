@@ -1,7 +1,8 @@
 """A reference interpreter for our IR, used to differential-test passes (never by compile.py).
 
 Runs every thread of the launch as a coroutine; threads of a block meet at bar.sync and lanes
-of a warp at shfl.sync, so reductions run too. Registers hold raw bit patterns and each
+of a warp at shfl.sync and mma.sync (fragments gathered per the PTX layout), so reductions and
+tensor-core tiles run too. cp.async copies complete at issue, a legal schedule of the hardware's. Registers hold raw bit patterns and each
 instruction reinterprets them through its type, like the hardware does. Floats are rounded to
 f32 after every op; .approx ops are computed exactly (compare with a tolerance).
 """
@@ -156,6 +157,14 @@ class Thread:
             if op is Op.BAR:
                 yield ("bar",)
                 continue
+            if op is Op.MMA:
+                a, b, c = (v.elems for v in inst.srcs)
+                frag = ([self.read(r, "b32") for r in a], [self.read(r, "b32") for r in b],
+                        [self.read(r, "f32") for r in c])
+                result = yield ("mma", frag)
+                for r, v in zip(inst.dsts[0].elems, result):
+                    self.write(r, "f32", v)
+                continue
             if op is Op.SHFL:
                 mode = inst.types[1]
                 t = inst.types[-1]
@@ -192,7 +201,20 @@ class Thread:
             self.mem.write(addr, t, to_bits(f32(new) if t == "f32" else new, t))
             return
 
+        if op is Op.CP:
+            if "async" in types and len(inst.srcs) == 3:
+                dst_a, src_a = self.addr(inst.srcs[0]), self.addr(inst.srcs[1])
+                for k in range(0, int(inst.srcs[2].value), 4):
+                    self.mem.write(dst_a + k, "b32", self.mem.read(src_a + k, "b32"))
+            return                    # commit_group / wait_group: every copy is already done
+
         dst = inst.dsts[0]
+        if op is Op.CVT and "tf32" in types:
+            bits = to_bits(self.read(inst.srcs[0], "f32"), "f32")
+            if (bits >> 23) & 0xFF != 0xFF:              # round to 10 mantissa bits, ties away
+                bits = (bits + 0x1000) & 0xFFFFE000
+            self.regs[dst] = bits
+            return
         if op is Op.SETP:
             cmp = types[0]
             a, b = (self.read(v, t) for v in inst.srcs)
@@ -322,6 +344,14 @@ def _run_cta(threads):
             warps.setdefault(tid // 32, []).append(tid)
         progressed = False
         for lanes in warps.values():
+            if all(pending.get(t, ("",))[0] == "mma" for t in lanes):
+                if len(lanes) != 32:
+                    raise RuntimeError(f"mma.sync with only {len(lanes)} live lanes")
+                frags = {t % 32: pending.pop(t)[1] for t in lanes}
+                for lane, d in _mma_m16n8k8(frags).items():
+                    resume[lanes[0] - lanes[0] % 32 + lane] = d
+                progressed = True
+                continue
             if all(pending.get(t, ("",))[0] == "shfl" for t in lanes):
                 values = {t % 32: pending[t][2] for t in lanes}
                 for t in lanes:
@@ -339,3 +369,23 @@ def _run_cta(threads):
             progressed = True
         if not progressed:
             raise RuntimeError(f"deadlock: {set(e[0] for e in pending.values())}")
+
+
+def _tf32(bits):
+    return from_bits(bits & 0xFFFFE000, "f32")      # the tensor core ignores the low 13 bits
+
+
+def _mma_m16n8k8(frags):
+    """frags: lane -> (a[4], b[2], c[4]) -> lane -> d[4], for the layout documented on Mma."""
+    A, B, C = np.zeros((16, 8)), np.zeros((8, 8)), np.zeros((16, 8))
+    for lane, (a, b, c) in frags.items():
+        g, t = lane >> 2, lane & 3
+        A[g, t], A[g + 8, t], A[g, t + 4], A[g + 8, t + 4] = map(_tf32, a)
+        B[t, g], B[t + 4, g] = map(_tf32, b)
+        C[g, 2 * t], C[g, 2 * t + 1], C[g + 8, 2 * t], C[g + 8, 2 * t + 1] = c
+    D = (A @ B + C).astype(np.float32)
+    out = {}
+    for lane in frags:
+        g, t = lane >> 2, lane & 3
+        out[lane] = [float(D[g, 2 * t]), float(D[g, 2 * t + 1]), float(D[g + 8, 2 * t]), float(D[g + 8, 2 * t + 1])]
+    return out

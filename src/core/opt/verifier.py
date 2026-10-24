@@ -27,6 +27,19 @@ def _bitcast_mov(inst, d, t):
     return inst.op is Op.MOV and t.value.startswith("b") and d.PTX_TYPE.nbytes == t.nbytes
 
 
+# m16n8k8 tf32 fragments: (operand, element count, register type)
+MMA_FRAGMENTS = (("d", 4, PtxType.F32), ("a", 4, PtxType.B32), ("b", 2, PtxType.B32), ("c", 4, PtxType.F32))
+
+
+def _check_mma(inst, fail):
+    if inst.guard is not None:
+        fail(f"{inst!r}: mma.sync.aligned must run on all lanes, it cannot be guarded")
+    for (name, n, t), v in zip(MMA_FRAGMENTS, (*inst.dsts, *inst.srcs), strict=True):
+        if not isinstance(v, Vector) or len(v.elems) != n or \
+                any(type(e) is not TYPE_TO_CLASS[t] for e in v.elems):
+            fail(f"{inst!r}: mma operand {name} must be {n} .{t} registers")
+
+
 def verify(function, after="?"):
     def fail(msg):
         raise VerifyError(f"after {after}: {function.name}: {msg}")
@@ -67,6 +80,8 @@ def verify(function, after="?"):
                 for v in srcs:
                     if t is not None and isinstance(v, VirtualRegister) and type(v) is not TYPE_TO_CLASS[t]:
                         fail(f"{inst!r}: source {v} has the wrong register class for .{t}")
+            if inst.op is Op.MMA:
+                _check_mma(inst, fail)
             for v in inst.srcs:
                 if isinstance(v, Address) and isinstance(v.base, Immediate):
                     fail(f"{inst!r}: address base is an immediate")
