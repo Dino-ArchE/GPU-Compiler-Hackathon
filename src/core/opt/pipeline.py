@@ -5,10 +5,13 @@ Every pipeline starts with split-blocks: the analyses need a bra/ret to end its 
 
 from .pass_manager import Repeat
 
+# the scalar clean-up loop: each pass exposes work for the others, so run them to a fixed point
+SCALAR = Repeat(["const-fold", "dce"])
+
 PIPELINES = {
     0: [],
-    1: ["split-blocks", "dce"],
-    2: ["split-blocks", "dce"],
+    1: ["split-blocks", SCALAR],
+    2: ["split-blocks", SCALAR],
 }
 
 
