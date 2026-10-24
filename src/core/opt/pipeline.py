@@ -10,8 +10,11 @@ SCALAR = Repeat(["const-fold", "instcombine", "copy-prop", "cse", "dce"])
 
 PIPELINES = {
     0: [],
+    # -O1: the fundamental clean-ups
     1: ["split-blocks", SCALAR],
-    2: ["split-blocks", SCALAR],
+    # -O2: + passes using facts ptxas cannot see (launch geometry, read-only buffers, alignment)
+    2: ["split-blocks", SCALAR,
+        "addr-fold", SCALAR],
 }
 
 
