@@ -56,7 +56,10 @@ src/core/ir/                 our IR, data only (+ IRBuilder):
     opcode.py                Op enum (ld, st, mov, add, setp, bra, ...)
     instruction.py           Instruction(op, types, dsts, srcs, guard, negate, comment); defs/uses.
                              Subclasses (Load, Store, Mov, Sync) are typed constructors that fill
-                             the same fields; they never print themselves
+                             the same fields; they never print themselves. Tensor cores (sm_89
+                             PTX, runs on the 5090): Mma (m16n8k8 tf32, fragment layout in its
+                             docstring, verified on hardware), CvtTf32, CpAsync/Commit/Wait;
+                             Builder.mma_tf32 / split_tf32 (3xTF32: plain tf32 fails 1e-3 tol)
     block.py                 BasicBlock(Value): branch target + instruction list
     function.py              Function: params, shared, RegisterFile, blocks (layout order)
     module.py                Module: version/target/address_size + functions
@@ -84,6 +87,7 @@ tests/                       pytest; interp.py is a reference interpreter for ou
                              kernel before/after passes, compares outputs, then ptxas-checks it.
 tools/check_opt.sh           -O0 vs -O2 + ptxas over every supported problem
 tools/run_runner.sh          submit every supported problem to the runner
+tools/mma_probe.py           re-checks the mma fragment layout on the runner (disguised as p01)
 ```
 
 Optimizer rules: SSA-style rewrites (copy-prop, CSE, LICM, reassociation) only touch registers
