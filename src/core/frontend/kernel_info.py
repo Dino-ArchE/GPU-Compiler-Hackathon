@@ -42,6 +42,8 @@ class KernelInfo:
         self.body = op.body
         self.grid = tuple(launch["grid"])
         self.block = tuple(launch["block"])
+        # dynamic shared memory the launch provides; > 0 means Smem arrays live in one pool
+        self.smem_bytes = launch.get("smem_bytes", 0)
 
         # meta.json's arg_order is the parameter contract; args carries dtype/shape per name
         arg_meta = {a["name"]: a for a in launch["args"]}

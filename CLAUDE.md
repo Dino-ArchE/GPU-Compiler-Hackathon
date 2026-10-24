@@ -96,6 +96,14 @@ Phase order: pointwise (p*) -> reductions (r*) -> fused (f*) -> attention (a*) -
   `Write.atomic` -> `red.global.add.f32` (meta lists the buffer in `zero_outputs`).
 - Ops seen: add, subtract, multiply, divide, maximum, reciprocal, sqrt, exp, relu, copy.
   The hidden set may add more, so keep `ops.py` table-driven.
+- **Init beats hoisting:** matmul's `Accum.axes` names the *inner* `_ki` loop, but an explicit
+  `Init` before the outer `_ks` loop owns the accumulator. Never re-initialize an Init'd name.
+- `Accum.base` set (f02, attention): `acc = op(base, value)` instead of `op(acc, value)`.
+- **Dynamic shared memory:** `meta.smem_bytes > 0` (m01: 73728, over the 48 KB static cap) means
+  one `.extern .shared` pool with each Smem array at an aligned offset, like the ref `.cu`.
+- `CpAsyncCopy` shared index = `smem_index + lane_index` element-wise (`lane_index` may be None).
+- Non-SSA registers: codegen rebinds names to fresh registers; `scoped()` moves rebound names back
+  into their original register at the end of a loop body / Cond arm.
 - Float literals in PTX: hex form `0f3F800000` (1.0). exp(x) = `ex2.approx(x * log2e)`.
 
 ## Testing

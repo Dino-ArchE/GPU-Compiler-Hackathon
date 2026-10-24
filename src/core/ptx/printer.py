@@ -9,7 +9,12 @@ def print_module(module):
     ]
     # shared arrays are module-scope globals, declared ahead of the entries that use them
     if module.shared:
-        out += ["", *(f".shared .align {align} .b8 {sym}[{nbytes}];" for sym, align, nbytes in module.shared)]
+        out.append("")
+        for sym, align, nbytes in module.shared:
+            if nbytes is None:   # dynamic shared memory: size comes from the launch
+                out.append(f".extern .shared .align {align} .b8 {sym}[];")
+            else:
+                out.append(f".shared .align {align} .b8 {sym}[{nbytes}];")
     for function in module.functions:
         out += ["", *_function(function)]
     text = "\n".join(out) + "\n"

@@ -2,7 +2,7 @@ import math
 
 from core.ir import (
     CTAID_X, NTID_X, TID_X, Address, Binary, Builder, Cmp, Function, Immediate, Instruction, Load,
-    Module, Mov, Op, PtxType, StateSpace, Vector,
+    Module, Mov, Op, PtxType, Register, StateSpace, Vector,
 )
 from core.visitor import Buffer, KernelVisitor, SymbolTable
 
@@ -44,6 +44,17 @@ def _walk(body):
             yield from _walk(child)
 
 
+class _Sum:
+    """An index sum we build ourselves (CpAsyncCopy smem_index + lane_index); visit__Sum lowers it."""
+
+    def __init__(self, left, right):
+        self.left, self.right = left, right
+
+
+def _compare(op, a, b):
+    return {"<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b, "==": a == b, "!=": a != b}[op]
+
+
 def _fold(op, a, b):
     """Constant-fold two int literals with C semantics (/ and % truncate toward zero)."""
     if op == "/":
@@ -69,6 +80,9 @@ class CodeGen(KernelVisitor):
         self.builder = Builder(self.function)
         self.sym_table = SymbolTable()
         self.accum_ready = set()   # ids of Accum nodes whose identity init is already emitted
+        self.explicit_init = set() # accumulators an Init node sets up: never re-initialize them
+        self.smem_pool = None      # extern .shared pool, when the launch passes dynamic smem
+        self.smem_used = 0         # bytes of the pool handed out so far
         # where guarded-off threads jump; placed last so `ret` is the kernel's only exit
         self.exit = self.builder.new_block("EXIT")
 
@@ -216,11 +230,46 @@ class CodeGen(KernelVisitor):
         b.bra(head)
         b.set_block(end_block)
 
+    def visit_Init(self, init):
+        """f32 name = identity, set once where it stands (matmul accumulators, which must
+        survive the outer k loop although their Accum names only the inner one)."""
+        ptx_type = PtxType.from_meta(init.dtype.name)
+        self.sym_table.define_scalar(init.name, self.builder.mov(ptx_type, Immediate(init.identity, ptx_type)))
+        self.explicit_init.add(init.name)
+
+    def visit_Let(self, let):
+        """f32 name = value: a named constant (or expression)."""
+        ptx_type = PtxType.from_meta(let.dtype.name)
+        value = Immediate(let.value.value, ptx_type) if type(let.value).__name__ == "Literal" else self.visit(let.value)
+        self.sym_table.define_scalar(let.name, self.builder.mov(ptx_type, value))
+
+    def visit_CpAsyncCopy(self, copy):
+        """cp.async: copy nbytes global -> shared without passing through registers.
+        The shared index is smem_index + lane_index, element-wise (lane_index may be None)."""
+        smem = self.sym_table.buffer(copy.smem)
+        index = copy.smem_index
+        if copy.lane_index:
+            index = [_Sum(a, b) for a, b in zip(index, copy.lane_index)]
+        dst = self.address(smem, index)
+        src = self.address(self.sym_table.buffer(copy.src), copy.src_index)
+        # .cg (L2 only) exists for 16-byte copies; smaller ones must use .ca
+        level = "cg" if copy.nbytes == 16 else "ca"
+        nbytes = Immediate(copy.nbytes, PtxType.U32)
+        self.builder.append(Instruction(Op.CP, ("async", level, "shared", "global"), srcs=[dst, src, nbytes]))
+
+    def visit_CpAsyncCommit(self, commit):
+        self.builder.append(Instruction(Op.CP, ("async", "commit_group")))
+
+    def visit_CpAsyncWait(self, wait):
+        """Wait until at most `group` committed copy groups are still in flight."""
+        self.builder.append(Instruction(Op.CP, ("async", "wait_group"), srcs=[Immediate(wait.group, PtxType.U32)]))
+
     def init_accumulators(self, loop):
         """Accum identity goes before the loop its `axes` names, not at the Accum statement:
         online softmax reads the accumulator before its Accum line."""
         for stmt in _walk(loop.body):
-            if type(stmt).__name__ == "Accum" and loop.axis.name in stmt.axes and id(stmt) not in self.accum_ready:
+            if (type(stmt).__name__ == "Accum" and loop.axis.name in stmt.axes
+                    and id(stmt) not in self.accum_ready and stmt.name not in self.explicit_init):
                 self.accum_ready.add(id(stmt))
                 self.init_accumulator(stmt)
 
@@ -290,13 +339,33 @@ class CodeGen(KernelVisitor):
         """Declares a shared array (printed at module scope); emits no instructions."""
         elem_type = SMEM_TYPES[smem.dtype]
         nbytes = math.prod(smem.extents) * elem_type.nbytes
-        sym = self.module.add_shared(smem.name, smem.align or elem_type.nbytes, nbytes)
-        self.sym_table.define_buffer(smem.name, Buffer(StateSpace.SHARED, sym, smem.extents, elem_type))
+        align = smem.align or elem_type.nbytes
+        if not self.kernel.smem_bytes:
+            base = self.module.add_shared(smem.name, align, nbytes)
+        else:
+            base = self.pool_slice(smem.name, align, nbytes)
+        self.sym_table.define_buffer(smem.name, Buffer(StateSpace.SHARED, base, smem.extents, elem_type))
+
+    def pool_slice(self, name, align, nbytes):
+        """Dynamic shared memory: static .shared is capped at 48 KB, so when meta.json passes
+        smem_bytes every Smem array is carved out of one .extern pool at an aligned offset.
+        Returns a register holding the array's shared address."""
+        if self.smem_pool is None:
+            self.smem_pool = self.module.add_shared("smem_pool", 16)
+        offset = -(-self.smem_used // align) * align
+        self.smem_used = offset + nbytes
+        if self.smem_used > self.kernel.smem_bytes:
+            raise ValueError(f"Smem {name} needs {self.smem_used} bytes; launch gives {self.kernel.smem_bytes}")
+        base = self.builder.mov(PtxType.U64, self.smem_pool)
+        return self.builder.add(PtxType.U64, base, Immediate(offset, PtxType.U64)) if offset else base
 
     def visit_Cond(self, cond):
         """if cond: body [else: else_body]. Threads that fail branch around the body."""
         b = self.builder
         taken = self.visit(cond.cond)
+        if isinstance(taken, Immediate):   # folded at compile time
+            self.scoped(cond.body if taken.value else cond.else_body)
+            return
         end = b.new_block("ENDIF")
         other = b.new_block("ELSE") if cond.else_body else end
         b.bra(other, guard=taken, negate=True)
@@ -341,6 +410,8 @@ class CodeGen(KernelVisitor):
         """
         left, right = self.visit(binary.left), self.visit(binary.right)
         if binary.op in INDEX_CMP:
+            if isinstance(left, Immediate) and isinstance(right, Immediate):
+                return Immediate(int(_compare(binary.op, left.value, right.value)), PtxType.PRED)
             return self.builder.setp(INDEX_CMP[binary.op], INDEX_TYPE, left, right)
         if binary.op not in INDEX_ARITH:
             raise NotImplementedError(f"index operator {binary.op!r}")
@@ -350,6 +421,19 @@ class CodeGen(KernelVisitor):
         if binary.op == "*":
             return self.builder.mul(INDEX_TYPE, left, right)
         return self.builder.binary(INDEX_ARITH[binary.op], INDEX_TYPE, left, right)
+
+    def visit_TernaryExpr(self, ternary):
+        """cond ? a : b on indices -> selp (both sides are computed; they are cheap)."""
+        cond = self.visit(ternary.cond)
+        if isinstance(cond, Immediate):
+            return self.visit(ternary.if_true if cond.value else ternary.if_false)
+        a, b = self.visit(ternary.if_true), self.visit(ternary.if_false)
+        dst = self.builder.reg(INDEX_TYPE)
+        self.builder.append(Instruction(Op.SELP, (INDEX_TYPE,), dsts=[dst], srcs=[a, b, cond]))
+        return dst
+
+    def visit__Sum(self, node):
+        return self.add_index(self.visit(node.left), self.visit(node.right))
 
     # ------------------------------------------------------------------ helpers
 
@@ -376,7 +460,8 @@ class CodeGen(KernelVisitor):
         if isinstance(flat, Immediate):
             return Address(buffer.base, flat.value * nbytes)
         b = self.builder
-        base = buffer.base if buffer.space is StateSpace.GLOBAL else b.mov(PtxType.U64, buffer.base)
+        # a static shared array is a Symbol; ld/st need its address in a register for [reg]
+        base = buffer.base if isinstance(buffer.base, Register) else b.mov(PtxType.U64, buffer.base)
         offset = b.mul_wide(flat, Immediate(nbytes, INDEX_TYPE))
         return Address(b.add(PtxType.S64, base, offset))
 
