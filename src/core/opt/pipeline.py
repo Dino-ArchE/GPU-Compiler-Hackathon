@@ -17,6 +17,7 @@ PIPELINES = {
     # -O2: + passes using facts ptxas cannot see (launch geometry, read-only buffers, alignment)
     2: ["split-blocks", "launch-specialize", Repeat(SCALAR_RANGE),
         "addr-fold", Repeat(SCALAR_RANGE),
+        "strength-reduce", Repeat(SCALAR),
         "vectorize-mem", "ld-nc"],
 }
 
