@@ -1,9 +1,13 @@
 """Build small functions by hand and run passes on them."""
 
+import os
+import subprocess
+import tempfile
+
 from core.ir import Builder, Function, Module, Op
 from core.opt import AnalysisManager, PassManager
 from core.opt import verify
-from core.ptx.printer import print_function
+from core.ptx.printer import print_function, print_module
 
 
 def new_function(params=("x", "out"), grid=(4, 1, 1), block=(256, 1, 1), readonly=("x",)):
@@ -60,4 +64,19 @@ def differential(build, passes, inputs, outputs, rtol=1e-6, atol=1e-6):
     got = run_kernel(module_of(opt), inputs, {k: v.copy() for k, v in outputs.items()})
     for name in ref:
         np.testing.assert_allclose(got[name], ref[name], rtol=rtol, atol=atol)
+    assemble(module_of(opt))
     return opt
+
+
+PTXAS = os.environ.get("PTXAS", "/usr/local/cuda/bin/ptxas")
+
+
+def assemble(module):
+    """Run ptxas on the module (skipped when ptxas is not installed)."""
+    if not os.path.exists(PTXAS):
+        return
+    with tempfile.NamedTemporaryFile("w", suffix=".ptx", delete=False) as fh:
+        fh.write(print_module(module))
+    res = subprocess.run([PTXAS, "-arch=sm_89", fh.name, "-o", os.devnull], capture_output=True, text=True)
+    os.unlink(fh.name)
+    assert res.returncode == 0, res.stderr + print_module(module)

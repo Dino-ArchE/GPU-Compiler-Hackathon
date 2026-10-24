@@ -55,6 +55,12 @@ def verify(function, after="?"):
                 d, t = inst.dsts[0], inst.ptx_type
                 if t is not None and isinstance(d, Register) and type(d) is not TYPE_TO_CLASS[t]:
                     fail(f"{inst!r}: dst {d} has the wrong register class for .{t}")
+            if inst.op in SAME_TYPE_DST and inst.op not in (Op.MOV, Op.SELP) and "wide" not in inst.types:
+                t = inst.ptx_type
+                srcs = inst.srcs[:1] if inst.op in (Op.SHL, Op.SHR) else inst.srcs
+                for v in srcs:
+                    if t is not None and isinstance(v, VirtualRegister) and type(v) is not TYPE_TO_CLASS[t]:
+                        fail(f"{inst!r}: source {v} has the wrong register class for .{t}")
             for v in inst.srcs:
                 if isinstance(v, Address) and isinstance(v.base, Immediate):
                     fail(f"{inst!r}: address base is an immediate")

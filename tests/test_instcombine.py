@@ -54,7 +54,7 @@ def fl(v):
     (lambda b, g, v: b.add(S, b.add(S, b.add(S, v, i(3)), i(4)), i(-7)), ["add.s32"]),
     (lambda b, g, v: b.binary(Op.SUB, S, b.add(S, v, i(5)), i(5)), ["add.s32", "sub.s32"]),
     (lambda b, g, v: b.mul(S, b.mul(S, v, i(3)), i(5)), []),
-    (lambda b, g, v: b.binary(Op.SHL, S, b.binary(Op.SHL, S, v, i(1)), i(2)), []),
+    (lambda b, g, v: b.binary(Op.SHL, PtxType.B32, b.binary(Op.SHL, PtxType.B32, v, i(1)), i(2)), []),
 ])
 def test_int_identities(body, gone):
     check(body, S, gone)
@@ -86,10 +86,10 @@ def test_float_identities_are_bit_exact(body, gone):
 
 def test_float_add_zero_kept():
     """-0.0 + 0.0 = +0.0, so x + 0.0 is not x."""
-    f = check(lambda b, g, v: b.add(F, v, fl(0.0)))
+    f = check(lambda b, g, v: b.add(F, v, fl(0.0)), F)
     assert "add.f32" in ops(f)
 
 
 def test_div_by_non_power_of_two_kept():
-    f = check(lambda b, g, v: b.binary(Op.DIV, F, v, fl(3.0), mode="rn"))
+    f = check(lambda b, g, v: b.binary(Op.DIV, F, v, fl(3.0), mode="rn"), F)
     assert "div.rn.f32" in ops(f)
