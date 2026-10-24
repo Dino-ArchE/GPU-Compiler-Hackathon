@@ -19,7 +19,7 @@ PIPELINES = {
     2: ["split-blocks", "launch-specialize", Repeat(SCALAR_RANGE),
         "unroll", Repeat(SCALAR_RANGE), "addr-fold", Repeat(SCALAR_RANGE),
         "licm", "strength-reduce", Repeat(SCALAR), "fast-math", "copy-prop",
-        "vectorize-mem", "fuse-mad", "dce", "ld-nc"],
+        "vectorize-mem", "fuse-mad", "if-convert", "simplify-cfg", "dce", "ld-nc"],
 }
 
 
