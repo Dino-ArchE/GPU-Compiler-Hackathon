@@ -36,3 +36,11 @@ class PtxType(StrEnum):
     def from_meta(cls, dtype):
         """meta.json / runner dtype -> PtxType. Their ints are i32/i64; PTX spells signed ints s32/s64."""
         return cls("s" + dtype[1:] if dtype.startswith("i") else dtype)
+
+
+class StateSpace(StrEnum):
+    """Where a memory instruction reads or writes: ld.param, ld.global, st.shared, ..."""
+
+    PARAM = "param"
+    GLOBAL = "global"
+    SHARED = "shared"
