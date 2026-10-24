@@ -42,3 +42,8 @@ def _instruction(inst):
     operands = ", ".join(str(v) for v in (*inst.dsts, *inst.srcs))
     text = f"{guard}{opcode} {operands};" if operands else f"{guard}{opcode};"
     return f"{text}\t// {inst.comment}" if inst.comment else text
+
+
+def print_function(function):
+    """One function's PTX text without the module header; for debug dumps."""
+    return "\n".join(_function(function))

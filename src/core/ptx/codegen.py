@@ -42,6 +42,9 @@ class CodeGen(KernelVisitor):
         self.kernel = kernel
         self.module = Module()
         self.function = self.module.add_function(Function(kernel.name, [a.name for a in kernel.args]))
+        # facts the optimizer may specialize on: the launch is fixed and inputs are never written
+        self.function.launch_grid, self.function.launch_block = kernel.grid, kernel.block
+        self.function.readonly = {self.function.param(a.name) for a in kernel.args if not a.is_output}
         self.builder = Builder(self.function)
         self.sym_table = SymbolTable()
         # where guarded-off threads jump; placed last so `ret` is the kernel's only exit
