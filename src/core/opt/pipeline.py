@@ -7,8 +7,8 @@ from .pass_manager import Repeat
 
 PIPELINES = {
     0: [],
-    1: ["split-blocks"],
-    2: ["split-blocks"],
+    1: ["split-blocks", "dce"],
+    2: ["split-blocks", "dce"],
 }
 
 
