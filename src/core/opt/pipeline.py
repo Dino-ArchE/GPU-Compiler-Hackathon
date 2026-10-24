@@ -7,14 +7,16 @@ from .pass_manager import Repeat
 
 # the scalar clean-up loop: each pass exposes work for the others, so run them to a fixed point
 SCALAR = ["const-fold", "instcombine", "copy-prop", "cse", "dce"]
+# with range facts (launch bounds, alignment) deciding compares and div/rem
+SCALAR_RANGE = ["range-fold", *SCALAR]
 
 PIPELINES = {
     0: [],
     # -O1: the fundamental clean-ups
     1: ["split-blocks", Repeat(SCALAR)],
     # -O2: + passes using facts ptxas cannot see (launch geometry, read-only buffers, alignment)
-    2: ["split-blocks", "launch-specialize", Repeat(SCALAR),
-        "addr-fold", Repeat(SCALAR),
+    2: ["split-blocks", "launch-specialize", Repeat(SCALAR_RANGE),
+        "addr-fold", Repeat(SCALAR_RANGE),
         "vectorize-mem", "ld-nc"],
 }
 
