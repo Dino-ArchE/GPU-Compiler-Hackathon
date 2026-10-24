@@ -13,11 +13,11 @@ SCALAR_RANGE = ["range-fold", *SCALAR]
 PIPELINES = {
     0: [],
     # -O1: the fundamental clean-ups
-    1: ["split-blocks", Repeat(SCALAR)],
+    1: ["split-blocks", Repeat(SCALAR), "licm", Repeat(SCALAR)],
     # -O2: + passes using facts ptxas cannot see (launch geometry, read-only buffers, alignment)
     2: ["split-blocks", "launch-specialize", Repeat(SCALAR_RANGE),
         "addr-fold", Repeat(SCALAR_RANGE),
-        "strength-reduce", Repeat(SCALAR),
+        "licm", "strength-reduce", Repeat(SCALAR),
         "vectorize-mem", "ld-nc"],
 }
 
