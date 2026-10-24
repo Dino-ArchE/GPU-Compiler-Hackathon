@@ -45,6 +45,13 @@ def from_bits(bits, t):
     return bits
 
 
+def f_div(a, b):
+    """IEEE division: x/0 is a signed infinity, 0/0 is nan."""
+    if b == 0.0:
+        return math.nan if a == 0.0 or math.isnan(a) else math.copysign(math.inf, a) * math.copysign(1.0, b)
+    return a / b
+
+
 def c_div(a, b):
     q = abs(a) // abs(b)
     return q if (a >= 0) == (b >= 0) else -q
@@ -220,7 +227,7 @@ class Thread:
                 r = r >> n
             r = r + srcs[2]
         elif op is Op.DIV:
-            r = srcs[0] / srcs[1] if is_f else c_div(srcs[0], srcs[1])
+            r = f_div(srcs[0], srcs[1]) if is_f else c_div(srcs[0], srcs[1])
         elif op is Op.REM:
             r = srcs[0] - c_div(srcs[0], srcs[1]) * srcs[1]
         elif op is Op.MIN:
