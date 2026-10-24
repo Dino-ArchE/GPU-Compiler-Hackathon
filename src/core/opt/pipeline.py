@@ -14,7 +14,8 @@ PIPELINES = {
     1: ["split-blocks", SCALAR],
     # -O2: + passes using facts ptxas cannot see (launch geometry, read-only buffers, alignment)
     2: ["split-blocks", SCALAR,
-        "addr-fold", SCALAR],
+        "addr-fold", SCALAR,
+        "ld-nc"],
 }
 
 
