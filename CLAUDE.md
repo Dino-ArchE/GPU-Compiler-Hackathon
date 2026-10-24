@@ -37,7 +37,7 @@ step between: a visitor lowers Kernel IR into our own small PTX-level IR, which 
 The IR layer exists for clean structure and optional passes, NOT for speed (ptxas already does
 CSE/DCE/LICM). Build passes only after categories 1-2 pass.
 
-Optimization plan (after MVP): a small pass manager over our IR (`src/core/opt/`), toggled by a
+Optimization plan: a pass manager over our IR (`src/core/opt/`, built; see below), toggled by a
 compile.py flag so raw vs optimized output can be diffed. `submit.py` sends no ptxas flags, so
 ptxas runs at its default `-O3`; the runner API also accepts `-O0..-O3`. Priority: passes that
 need knowledge ptxas lacks (vector ld/st, `ld.global.nc` for read-only inputs, unsigned index
@@ -64,7 +64,32 @@ src/core/ir/                 our IR, data only (+ IRBuilder):
                              helpers (load, load_param, store, mov, sync) allocate and RETURN the
                              result register, LLVM-style; inst(Op.X, ...) is the generic fallback
 src/core/ptx/printer.py      print_module(Module) -> PTX text; the only code that knows PTX syntax
+src/core/opt/                optimizer over our IR (compile.py -O0|-O1|-O2, default -O2;
+                             --passes a,b / --print-after X|all / --stats). On any optimizer
+                             exception compile.py falls back to unoptimized PTX.
+    pass_manager.py          FunctionPass/Analysis + @register_pass/@register_analysis (one class
+                             per file, auto-discovered), AnalysisManager cache (`preserves`
+                             decides what survives a change), Repeat(...) fixed-point groups
+    pipeline.py              the -O levels; every pipeline starts with split-blocks
+    verifier.py              run after every changing pass (names the pass that broke the IR)
+    fold.py                  PTX-exact constant evaluation shared by folding passes
+    analysis/                cfg, dominators, loops, defuse (single_def/is_ssa), liveness,
+                             ranges (interval + pow2 alignment, launch-aware), memory (pointer
+                             roots, read-only buffers; distinct params assumed not to alias)
+    passes/                  split-blocks, const-fold, instcombine, copy-prop, cse, dce,
+                             simplify-cfg, licm, launch-specialize, range-fold, addr-fold,
+                             strength-reduce, vectorize-mem, fuse-mad, ld-nc
+tests/                       pytest; interp.py is a reference interpreter for our IR (threads as
+                             coroutines, bar.sync/shfl supported). helpers.differential() runs a
+                             kernel before/after passes, compares outputs, then ptxas-checks it.
+tools/check_opt.sh           -O0 vs -O2 + ptxas over every supported problem
+tools/run_runner.sh          submit every supported problem to the runner
 ```
+
+Optimizer rules: SSA-style rewrites (copy-prop, CSE, LICM, reassociation) only touch registers
+whose `defuse.single_def` exists (one unguarded def); accumulators are left alone. A guarded def
+is not a kill. Special registers can only feed `mov`. Each new pass gets a unit test through
+`differential()`, then `tools/check_opt.sh` + `tools/run_runner.sh`, then its own commit.
 
 Rules: every operand is a `Value` (never a raw str/int). Opcodes, types and state spaces use the
 enums (`Op`, `PtxType`, `StateSpace`); meta.json dtypes go through `PtxType.from_meta` (i32 -> s32). Instruction is not a Value: PTX registers
