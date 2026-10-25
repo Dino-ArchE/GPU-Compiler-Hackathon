@@ -47,51 +47,52 @@ def evaluate(inst, values):
     vals = [wrap(int(v), t) for v in values]
     n = int(t.value[1:])
     rt = result_type(inst)
-    if op is Op.ADD:
-        r = vals[0] + vals[1]
-    elif op is Op.SUB:
-        r = vals[0] - vals[1]
-    elif op is Op.MUL:
-        r = vals[0] * vals[1]
-        if Mod.HI in mods:
-            r >>= n
-    elif op is Op.MAD:
-        if Mod.HI in mods:
+    match op:
+        case Op.ADD:
+            r = vals[0] + vals[1]
+        case Op.SUB:
+            r = vals[0] - vals[1]
+        case Op.MUL:
+            r = vals[0] * vals[1]
+            if Mod.HI in mods:
+                r >>= n
+        case Op.MAD:
+            if Mod.HI in mods:
+                return None
+            r = vals[0] * vals[1] + wrap(int(values[2]), rt)
+        case Op.DIV:
+            if vals[1] == 0:
+                return None
+            r = c_div(vals[0], vals[1])
+        case Op.REM:
+            if vals[1] == 0:
+                return None
+            r = vals[0] - c_div(vals[0], vals[1]) * vals[1]
+        case Op.MIN:
+            r = min(vals)
+        case Op.MAX:
+            r = max(vals)
+        case Op.NEG:
+            r = -vals[0]
+        case Op.ABS:
+            r = abs(vals[0])
+        case Op.AND:
+            r = vals[0] & vals[1]
+        case Op.OR:
+            r = vals[0] | vals[1]
+        case Op.XOR:
+            r = vals[0] ^ vals[1]
+        case Op.NOT:
+            r = ~vals[0]
+        case Op.SHL:
+            r = vals[0] << min(vals[1] & 0xFFFFFFFF, n)
+        case Op.SHR:
+            k = min(vals[1] & 0xFFFFFFFF, n)
+            r = vals[0] >> k          # arithmetic for signed types; unsigned values are already >= 0
+        case Op.MOV:
+            r = vals[0]
+        case _:
             return None
-        r = vals[0] * vals[1] + wrap(int(values[2]), rt)
-    elif op is Op.DIV:
-        if vals[1] == 0:
-            return None
-        r = c_div(vals[0], vals[1])
-    elif op is Op.REM:
-        if vals[1] == 0:
-            return None
-        r = vals[0] - c_div(vals[0], vals[1]) * vals[1]
-    elif op is Op.MIN:
-        r = min(vals)
-    elif op is Op.MAX:
-        r = max(vals)
-    elif op is Op.NEG:
-        r = -vals[0]
-    elif op is Op.ABS:
-        r = abs(vals[0])
-    elif op is Op.AND:
-        r = vals[0] & vals[1]
-    elif op is Op.OR:
-        r = vals[0] | vals[1]
-    elif op is Op.XOR:
-        r = vals[0] ^ vals[1]
-    elif op is Op.NOT:
-        r = ~vals[0]
-    elif op is Op.SHL:
-        r = vals[0] << min(vals[1] & 0xFFFFFFFF, n)
-    elif op is Op.SHR:
-        k = min(vals[1] & 0xFFFFFFFF, n)
-        r = vals[0] >> k          # arithmetic for signed types; unsigned values are already >= 0
-    elif op is Op.MOV:
-        r = vals[0]
-    else:
-        return None
     return wrap(r, rt)
 
 
@@ -102,26 +103,27 @@ def _evaluate_float(op, mods, t, values):
         return None
     v = [float(x) for x in values]
     try:
-        if op is Op.ADD:
-            r = v[0] + v[1]
-        elif op is Op.SUB:
-            r = v[0] - v[1]
-        elif op is Op.MUL:
-            r = v[0] * v[1]
-        elif op is Op.DIV:
-            r = v[0] / v[1]
-        elif op is Op.RCP:
-            r = 1.0 / v[0]
-        elif op is Op.SQRT:
-            r = math.sqrt(v[0])
-        elif op is Op.MIN:
-            r = min(v)
-        elif op is Op.MAX:
-            r = max(v)
-        elif op is Op.NEG:
-            r = -v[0]
-        else:
-            r = abs(v[0])
+        match op:
+            case Op.ADD:
+                r = v[0] + v[1]
+            case Op.SUB:
+                r = v[0] - v[1]
+            case Op.MUL:
+                r = v[0] * v[1]
+            case Op.DIV:
+                r = v[0] / v[1]
+            case Op.RCP:
+                r = 1.0 / v[0]
+            case Op.SQRT:
+                r = math.sqrt(v[0])
+            case Op.MIN:
+                r = min(v)
+            case Op.MAX:
+                r = max(v)
+            case Op.NEG:
+                r = -v[0]
+            case Op.ABS:      # the last of FLOAT_FOLDABLE
+                r = abs(v[0])
     except (ZeroDivisionError, ValueError):
         return None          # leave inf/nan cases to the hardware
     if any(math.isnan(x) for x in (*v, r)):

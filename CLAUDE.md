@@ -101,7 +101,8 @@ is not a kill. Special registers can only feed `mov`. Each new pass gets a unit 
 
 Rules: every operand is a `Value` (never a raw str/int). Opcodes, types, state spaces, comparisons and
 modifiers use the enums (`Op`, `PtxType`, `StateSpace`, `Cmp`, `Mod`: `Mod.RN`, never `"rn"`;
-`Instruction.types` raises TypeError on a bare str); meta.json dtype strings and Kernel IR DataTypes both go through `PtxType.from_dtype` (i32 -> s32; pass the object, not `.name`). Instruction is not a Value: PTX registers
+`Instruction.types` raises TypeError on a bare str); dispatch on one opcode or operand kind uses `match`, with dotted
+patterns only (`case Op.ADD:`; a bare `case ADD:` captures and matches everything); meta.json dtype strings and Kernel IR DataTypes both go through `PtxType.from_dtype` (i32 -> s32; pass the object, not `.name`). Instruction is not a Value: PTX registers
 are not SSA (accumulators update in place). Block layout order = `set_block` order, and fall-through
 goes to the next block. The visitor emits `ret` itself.
 Printing: `str()` is the PTX text at every level: a Value its operand spelling, an Instruction

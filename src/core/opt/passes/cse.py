@@ -72,13 +72,16 @@ class CommonSubexpressionElimination(FunctionPass):
 
 
 def _vkey(v):
-    if isinstance(v, Immediate):
-        bits = struct.pack("<d", v.value) if isinstance(v.value, float) else v.value
-        return ("imm", str(v.ptx_type), bits)
-    if isinstance(v, Address):
-        return ("addr", _vkey(v.base), v.offset)
-    if isinstance(v, Vector):
-        return ("vec", tuple(_vkey(e) for e in v.elems))
-    if isinstance(v, Register):
-        return ("reg", v.name)
-    return ("sym", str(v))
+    match v:
+        case Immediate(value=float() as x, ptx_type=t):
+            return ("imm", str(t), struct.pack("<d", x))
+        case Immediate(value=x, ptx_type=t):
+            return ("imm", str(t), x)
+        case Address(base=base, offset=offset):
+            return ("addr", _vkey(base), offset)
+        case Vector(elems=elems):
+            return ("vec", tuple(_vkey(e) for e in elems))
+        case Register(name=name):
+            return ("reg", name)
+        case _:
+            return ("sym", str(v))

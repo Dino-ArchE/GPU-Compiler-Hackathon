@@ -12,7 +12,7 @@ import struct
 
 import numpy as np
 
-from core.ir import Address, BasicBlock, Immediate, Op, Param, PtxType, Register, SpecialRegister, StateSpace, Symbol, Vector
+from core.ir import Address, BasicBlock, Immediate, Mod, Op, Param, PtxType, Register, SpecialRegister, StateSpace, Symbol, Vector
 
 BITS = {"pred": 1, "b16": 16, "s16": 16, "u16": 16, "f16": 16, "b32": 32, "s32": 32, "u32": 32,
         "f32": 32, "b64": 64, "s64": 64, "u64": 64, "f64": 64}
@@ -104,20 +104,25 @@ class Thread:
 
     def read(self, v, t):
         """Operand value typed as t (Python int / float / bool)."""
-        if isinstance(v, Immediate):
-            if t in ("f32", "f64"):
-                return float(v.value)
-            return from_bits(to_bits(int(v.value), t), t)
-        if isinstance(v, SpecialRegister):
-            return self.special[v.name]
-        if isinstance(v, Symbol):
-            return self.params[v] if isinstance(v, Param) else self.shared[v]
-        if isinstance(v, Register):
-            if v not in self.regs:
-                raise RuntimeError(f"thread {self.tid}: {v} read before written")
-            bits = self.regs[v]
-            return bits if t == "pred" else from_bits(bits, t)
-        raise TypeError(f"cannot read {v!r}")
+        # order matters: SpecialRegister is a Register, Param is a Symbol
+        match v:
+            case Immediate(value=x) if t in ("f32", "f64"):
+                return float(x)
+            case Immediate(value=x):
+                return from_bits(to_bits(int(x), t), t)
+            case SpecialRegister(name=name):
+                return self.special[name]
+            case Param():
+                return self.params[v]
+            case Symbol():
+                return self.shared[v]
+            case Register():
+                if v not in self.regs:
+                    raise RuntimeError(f"thread {self.tid}: {v} read before written")
+                bits = self.regs[v]
+                return bits if t == "pred" else from_bits(bits, t)
+            case _:
+                raise TypeError(f"cannot read {v!r}")
 
     def write(self, reg, t, value):
         self.regs[reg] = bool(value) if t == "pred" else to_bits(value, t)
@@ -156,7 +161,7 @@ class Thread:
                 bi, ii = index[inst.target], 0
                 continue
             if op is Op.BAR:
-                if "warp" not in inst.types:       # bar.warp.sync: lanes already run in lockstep here
+                if Mod.WARP not in inst.types:       # bar.warp.sync: lanes already run in lockstep here
                     yield ("bar",)
                 continue
             if op is Op.ACTIVEMASK:
@@ -207,20 +212,20 @@ class Thread:
             return
 
         if op is Op.CP:
-            if "async" in types and len(inst.srcs) == 3:
+            if Mod.ASYNC in types and len(inst.srcs) == 3:
                 dst_a, src_a = self.addr(inst.srcs[0]), self.addr(inst.srcs[1])
                 for k in range(0, int(inst.srcs[2].value), 4):
                     self.mem.write(dst_a + k, "b32", self.mem.read(src_a + k, "b32"))
             return                    # commit_group / wait_group: every copy is already done
 
         dst = inst.dsts[0]
-        if op is Op.CVT and "tf32" in types:
+        if op is Op.CVT and Mod.TF32 in types:
             bits = to_bits(self.read(inst.srcs[0], "f32"), "f32")
             if (bits >> 23) & 0xFF != 0xFF:              # round to 10 mantissa bits, ties away
                 bits = (bits + 0x1000) & 0xFFFFE000
             self.regs[dst] = bits
             return
-        if op is Op.CVT and t != "tf32":
+        if op is Op.CVT and t != Mod.TF32:
             # cvt.<rnd>.<dst>.<src>: here only float -> float rounding to an integral value
             mode = types[0]
             x = self.read(inst.srcs[0], types[-1])
@@ -242,66 +247,67 @@ class Thread:
             self.write(dst, t, self.read(inst.srcs[0], t))
             return
 
-        wide = "wide" in types
+        wide = Mod.WIDE in types
         rt = WIDE[t] if wide else t
         srcs = [self.read(v, t if not (op is Op.MAD and k == 2 and wide) else rt)
                 for k, v in enumerate(inst.srcs)]
         is_f = t in ("f32", "f64")
         n = BITS[t]
-        if op is Op.ADD:
-            r = srcs[0] + srcs[1]
-        elif op is Op.SUB:
-            r = srcs[0] - srcs[1]
-        elif op is Op.MUL:
-            r = srcs[0] * srcs[1]
-            if "hi" in types:
-                r = r >> n
-        elif op in (Op.MAD, Op.FMA):
-            r = srcs[0] * srcs[1]
-            if "hi" in types:
-                r = r >> n
-            r = r + srcs[2]
-        elif op is Op.DIV:
-            r = f_div(srcs[0], srcs[1]) if is_f else c_div(srcs[0], srcs[1])
-        elif op is Op.REM:
-            r = srcs[0] - c_div(srcs[0], srcs[1]) * srcs[1]
-        elif op is Op.MIN:
-            r = min(srcs)
-        elif op is Op.MAX:
-            r = max(srcs)
-        elif op is Op.NEG:
-            r = -srcs[0]
-        elif op is Op.ABS:
-            r = abs(srcs[0])
-        elif op is Op.AND:
-            r = srcs[0] & srcs[1]
-        elif op is Op.OR:
-            r = srcs[0] | srcs[1]
-        elif op is Op.XOR:
-            r = srcs[0] ^ srcs[1]
-        elif op is Op.NOT:
-            r = (not srcs[0]) if t == "pred" else ~srcs[0]
-        elif op is Op.SHL:
-            r = srcs[0] << min(srcs[1], n)
-        elif op is Op.SHR:
-            a = srcs[0] if t.startswith("s") else srcs[0] & ((1 << n) - 1)
-            r = a >> min(srcs[1], n)
-        elif op is Op.RCP:
-            r = 1.0 / srcs[0]
-        elif op is Op.SQRT:
-            r = math.sqrt(srcs[0])
-        elif op is Op.RSQRT:
-            r = 1.0 / math.sqrt(srcs[0])
-        elif op is Op.SIN:
-            r = math.sin(srcs[0])
-        elif op is Op.COS:
-            r = math.cos(srcs[0])
-        elif op is Op.EX2:
-            r = 2.0 ** srcs[0]
-        elif op is Op.LG2:
-            r = math.log2(srcs[0])
-        else:
-            raise NotImplementedError(f"interp: {inst!r}")
+        match op:
+            case Op.ADD:
+                r = srcs[0] + srcs[1]
+            case Op.SUB:
+                r = srcs[0] - srcs[1]
+            case Op.MUL:
+                r = srcs[0] * srcs[1]
+                if Mod.HI in types:
+                    r = r >> n
+            case Op.MAD | Op.FMA:
+                r = srcs[0] * srcs[1]
+                if Mod.HI in types:
+                    r = r >> n
+                r = r + srcs[2]
+            case Op.DIV:
+                r = f_div(srcs[0], srcs[1]) if is_f else c_div(srcs[0], srcs[1])
+            case Op.REM:
+                r = srcs[0] - c_div(srcs[0], srcs[1]) * srcs[1]
+            case Op.MIN:
+                r = min(srcs)
+            case Op.MAX:
+                r = max(srcs)
+            case Op.NEG:
+                r = -srcs[0]
+            case Op.ABS:
+                r = abs(srcs[0])
+            case Op.AND:
+                r = srcs[0] & srcs[1]
+            case Op.OR:
+                r = srcs[0] | srcs[1]
+            case Op.XOR:
+                r = srcs[0] ^ srcs[1]
+            case Op.NOT:
+                r = (not srcs[0]) if t == "pred" else ~srcs[0]
+            case Op.SHL:
+                r = srcs[0] << min(srcs[1], n)
+            case Op.SHR:
+                a = srcs[0] if t.startswith("s") else srcs[0] & ((1 << n) - 1)
+                r = a >> min(srcs[1], n)
+            case Op.RCP:
+                r = 1.0 / srcs[0]
+            case Op.SQRT:
+                r = math.sqrt(srcs[0])
+            case Op.RSQRT:
+                r = 1.0 / math.sqrt(srcs[0])
+            case Op.SIN:
+                r = math.sin(srcs[0])
+            case Op.COS:
+                r = math.cos(srcs[0])
+            case Op.EX2:
+                r = 2.0 ** srcs[0]
+            case Op.LG2:
+                r = math.log2(srcs[0])
+            case _:
+                raise NotImplementedError(f"interp: {inst!r}")
         if is_f and t == "f32":
             r = f32(r)
         self.write(dst, rt, r)

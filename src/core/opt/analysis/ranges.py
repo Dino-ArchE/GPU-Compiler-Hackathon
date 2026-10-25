@@ -183,54 +183,55 @@ class ValueRanges:
         rt = WIDE[t] if wide else t                     # result type
         s = [self.get(v, t) if not isinstance(v, Address) else top(t) for v in inst.srcs]
 
-        if op is Op.MOV:
-            return s[0]
-        if op is Op.ADD:
-            a, b = s
-            r = Range(a.lo + b.lo, a.hi + b.hi, min(a.align, b.align))
-        elif op is Op.SUB:
-            a, b = s
-            r = Range(a.lo - b.hi, a.hi - b.lo, min(a.align, b.align))
-        elif op is Op.MUL and Mod.HI not in mods:
-            a, b = s
-            r = Range(*_corners(a, b, lambda x, y: x * y), a.align * b.align)
-        elif op is Op.MAD and Mod.HI not in mods:
-            a, b = s[:2]
-            c = self.get(inst.srcs[2], rt)
-            lo, hi = _corners(a, b, lambda x, y: x * y)
-            r = Range(lo + c.lo, hi + c.hi, min(a.align * b.align, c.align))
-        elif op is Op.SHL and s[1].exact:
-            a, k = s[0], s[1].lo
-            r = Range(a.lo << k, a.hi << k, a.align << k)
-        elif op is Op.SHR and s[1].exact and s[0].nonneg:
-            a, k = s[0], s[1].lo
-            r = Range(a.lo >> k, a.hi >> k, max(1, a.align >> k))
-        elif op is Op.AND and (s[0].exact or s[1].exact):
-            a, m = (s[1], s[0].lo) if s[0].exact else (s[0], s[1].lo)
-            if m >= 0:
-                r = Range(0, m if not a.nonneg else min(m, a.hi), max(a.align, lowbit(m)))
-            else:
-                return top(rt, a.align)
-        elif op is Op.DIV and s[1].exact and s[1].lo > 0 and s[0].nonneg:
-            a, c = s[0], s[1].lo
-            r = Range(a.lo // c, a.hi // c)
-        elif op is Op.REM and s[1].exact and s[1].lo > 0 and s[0].nonneg:
-            a, c = s[0], s[1].lo
-            align = min(a.align, c) if lowbit(c) == c else 1
-            r = a if a.hi < c else Range(0, c - 1, align)
-        elif op is Op.MIN:
-            a, b = s
-            r = Range(min(a.lo, b.lo), min(a.hi, b.hi), min(a.align, b.align))
-        elif op is Op.MAX:
-            a, b = s
-            r = Range(max(a.lo, b.lo), max(a.hi, b.hi), min(a.align, b.align))
-        elif op is Op.SELP:
-            a, b = s[:2]
-            r = Range(min(a.lo, b.lo), max(a.hi, b.hi), min(a.align, b.align))
-        elif op is Op.NEG:
-            r = Range(-s[0].hi, -s[0].lo, s[0].align)
-        else:
-            return top(rt)
+        match op:
+            case Op.MOV:
+                return s[0]
+            case Op.ADD:
+                a, b = s
+                r = Range(a.lo + b.lo, a.hi + b.hi, min(a.align, b.align))
+            case Op.SUB:
+                a, b = s
+                r = Range(a.lo - b.hi, a.hi - b.lo, min(a.align, b.align))
+            case Op.MUL if Mod.HI not in mods:
+                a, b = s
+                r = Range(*_corners(a, b, lambda x, y: x * y), a.align * b.align)
+            case Op.MAD if Mod.HI not in mods:
+                a, b = s[:2]
+                c = self.get(inst.srcs[2], rt)
+                lo, hi = _corners(a, b, lambda x, y: x * y)
+                r = Range(lo + c.lo, hi + c.hi, min(a.align * b.align, c.align))
+            case Op.SHL if s[1].exact:
+                a, k = s[0], s[1].lo
+                r = Range(a.lo << k, a.hi << k, a.align << k)
+            case Op.SHR if s[1].exact and s[0].nonneg:
+                a, k = s[0], s[1].lo
+                r = Range(a.lo >> k, a.hi >> k, max(1, a.align >> k))
+            case Op.AND if s[0].exact or s[1].exact:
+                a, m = (s[1], s[0].lo) if s[0].exact else (s[0], s[1].lo)
+                if m >= 0:
+                    r = Range(0, m if not a.nonneg else min(m, a.hi), max(a.align, lowbit(m)))
+                else:
+                    return top(rt, a.align)
+            case Op.DIV if s[1].exact and s[1].lo > 0 and s[0].nonneg:
+                a, c = s[0], s[1].lo
+                r = Range(a.lo // c, a.hi // c)
+            case Op.REM if s[1].exact and s[1].lo > 0 and s[0].nonneg:
+                a, c = s[0], s[1].lo
+                align = min(a.align, c) if lowbit(c) == c else 1
+                r = a if a.hi < c else Range(0, c - 1, align)
+            case Op.MIN:
+                a, b = s
+                r = Range(min(a.lo, b.lo), min(a.hi, b.hi), min(a.align, b.align))
+            case Op.MAX:
+                a, b = s
+                r = Range(max(a.lo, b.lo), max(a.hi, b.hi), min(a.align, b.align))
+            case Op.SELP:
+                a, b = s[:2]
+                r = Range(min(a.lo, b.lo), max(a.hi, b.hi), min(a.align, b.align))
+            case Op.NEG:
+                r = Range(-s[0].hi, -s[0].lo, s[0].align)
+            case _:
+                return top(rt)
         return fit(r, rt)
 
 
