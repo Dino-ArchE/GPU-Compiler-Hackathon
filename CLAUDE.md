@@ -47,9 +47,8 @@ already does (CSE/DCE/const-fold). Measure with the runner's `registers` and `me
 Our registers are not SSA: any pass must respect redefinitions (accumulators).
 
 ```
-compile.py                   argv -> KernelInfo -> visitor -> print_module -> stdout
+compile.py                   argv -> KernelInfo -> CodeGen -> optimizer -> print_module -> stdout
 src/core/frontend/           KernelInfo: name, params (arg_order), buffer shapes/dtypes, body
-src/core/visitor/            KernelVisitor: dispatch by class name (visit_Tile); codegen subclass
 src/core/ir/                 our IR, data only (+ IRBuilder):
     value.py                 Value base; Immediate, Symbol, Address [base+off], Vector {..}
     reg.py                   Register(Value) hierarchy, RegisterFile allocator
@@ -67,6 +66,9 @@ src/core/ir/                 our IR, data only (+ IRBuilder):
     builder.py               Builder: insertion point, reg(), new_block(), set_block(); typed
                              helpers (load, load_param, store, mov, sync) allocate and RETURN the
                              result register, LLVM-style; inst(Op.X, ...) is the generic fallback
+src/core/ptx/codegen.py      CodeGen: visit() dispatches on node class name (visit_Tile); Kernel IR -> our IR
+src/core/ptx/ops.py          elementwise op table (Assign.op.name -> instructions)
+src/core/ptx/symbol.py       SymbolTable (scalars -> Register, buffers -> Buffer)
 src/core/ptx/printer.py      print_module(Module) -> PTX text; the only code that knows PTX syntax
 src/core/opt/                optimizer over our IR (compile.py -O0|-O1|-O2, default -O2;
                              --passes a,b / --disable a,b / --print-after X|all / --stats). On any optimizer
@@ -101,7 +103,7 @@ is not a kill. Special registers can only feed `mov`. Each new pass gets a unit 
 Rules: every operand is a `Value` (never a raw str/int). Opcodes, types and state spaces use the
 enums (`Op`, `PtxType`, `StateSpace`); meta.json dtypes go through `PtxType.from_meta` (i32 -> s32). Instruction is not a Value: PTX registers
 are not SSA (accumulators update in place). Block layout order = `set_block` order, and fall-through
-goes to the next block. The visitor emits `ret` itself. `ptx/` never imports frontend or IR-gen code.
+goes to the next block. The visitor emits `ret` itself. `printer.py` never imports codegen.
 
 Phase order: pointwise (p*) -> reductions (r*) -> fused (f*) -> attention (a*) -> matmul (m*)
 -> hidden-set hardening. Attention is easier than matmul: it has no cp.async.

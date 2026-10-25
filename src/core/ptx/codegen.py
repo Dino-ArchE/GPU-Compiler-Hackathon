@@ -4,9 +4,9 @@ from core.ir import (
     CTAID_X, NTID_X, TID_X, Address, Binary, Builder, Cmp, Function, Immediate, Instruction, Load,
     Module, Mov, Op, PtxType, Register, StateSpace, Vector,
 )
-from core.visitor import Buffer, KernelVisitor, SymbolTable
 
 from .ops import lower_elementwise
+from .symbol import Buffer, SymbolTable
 
 
 # Smem.dtype uses C spellings
@@ -67,8 +67,11 @@ def _fold(op, a, b):
     return {"+": a + b, "-": a - b, "*": a * b}[op]
 
 
-class CodeGen(KernelVisitor):
+class CodeGen:
     """Lowers one kernel's Kernel IR into our IR: a Module holding one Function.
+
+    Emmy's nodes have no accept(), so visit() dispatches on the node's class name
+    (Tile -> visit_Tile), the way Python's ast.NodeVisitor does.
 
     Statement visitors (Tile, Load, Assign, Write, ...) emit instructions and return nothing.
     Expression visitors (Var, Literal, BinaryExpr) return the Value holding their result
@@ -76,7 +79,6 @@ class CodeGen(KernelVisitor):
     """
 
     def __init__(self, kernel):
-        super().__init__(kernel)
         self.kernel = kernel
         self.module = Module()
         self.function = self.module.add_function(Function(kernel.name, [a.name for a in kernel.args]))
@@ -101,6 +103,16 @@ class CodeGen(KernelVisitor):
 
     def __call__(self):
         return self.gen()
+
+    def visit(self, node):
+        method = getattr(self, f"visit_{type(node).__name__}", None)
+        if method is None:
+            raise NotImplementedError(f"no visitor for {type(node).__name__}")
+        return method(node)
+
+    def visit_Body(self, body):
+        for stmt in body:
+            self.visit(stmt)
 
     def prologue(self):
         """Not driven by an IR node: turn each param into a global base address, in arg_order."""
