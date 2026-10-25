@@ -100,7 +100,7 @@ is not a kill. Special registers can only feed `mov`. Each new pass gets a unit 
 `differential()`, then `tools/check_opt.sh` + `tools/run_runner.sh`, then its own commit.
 
 Rules: every operand is a `Value` (never a raw str/int). Opcodes, types and state spaces use the
-enums (`Op`, `PtxType`, `StateSpace`); meta.json dtypes go through `PtxType.from_meta` (i32 -> s32). Instruction is not a Value: PTX registers
+enums (`Op`, `PtxType`, `StateSpace`); meta.json dtype strings and Kernel IR DataTypes both go through `PtxType.from_meta` (i32 -> s32; pass the object, not `.name`). Instruction is not a Value: PTX registers
 are not SSA (accumulators update in place). Block layout order = `set_block` order, and fall-through
 goes to the next block. The visitor emits `ret` itself.
 Printing: `str()` is the PTX text at every level: a Value its operand spelling, an Instruction

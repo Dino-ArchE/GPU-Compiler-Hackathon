@@ -35,7 +35,14 @@ class PtxType(StrEnum):
     @classmethod
     def from_meta(cls, dtype):
         """meta.json / runner dtype -> PtxType. Their ints are i32/i64; PTX spells signed ints s32/s64.
-        A bool value (a comparison result) lives in a predicate register."""
+        A bool value (a comparison result) lives in a predicate register.
+
+        `dtype` is a meta.json string ("f32") or a Kernel IR DataType (Assign.dtype etc.), which
+        carries the same spelling in `.name`; read by attribute so ir/ never imports Emmy.
+        """
+        if isinstance(dtype, cls):       # an enum's .name is "F32", so take it as is
+            return dtype
+        dtype = getattr(dtype, "name", dtype)
         if dtype == "bool":
             return cls.PRED
         return cls("s" + dtype[1:] if dtype.startswith("i") else dtype)
