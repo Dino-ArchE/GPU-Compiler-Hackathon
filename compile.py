@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from core.frontend import KernelInfo  # noqa: E402
 from core.opt import PassManager, build_pipeline  # noqa: E402
-from core.ptx import CodeGen, print_module  # noqa: E402
+from core.ptx import CodeGen  # noqa: E402
 
 
 def parse_args():
@@ -50,7 +50,7 @@ def main():
         print("compile.py: optimizer failed, emitting unoptimized PTX", file=sys.stderr)
         module = CodeGen(kernel).gen()
     pm.report()
-    sys.stdout.write(print_module(module))
+    sys.stdout.write(str(module))
 
 
 if __name__ == "__main__":

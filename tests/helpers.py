@@ -7,7 +7,6 @@ import tempfile
 from core.ir import Builder, Function, Module, Op
 from core.opt import AnalysisManager, PassManager
 from core.opt import verify
-from core.ptx.printer import print_function, print_module
 
 
 def new_function(params=("x", "out"), grid=(4, 1, 1), block=(256, 1, 1), readonly=("x",)):
@@ -39,7 +38,7 @@ def am(function):
 
 
 def text(function):
-    return print_function(function)
+    return str(function)
 
 
 def ops(function):
@@ -81,7 +80,7 @@ def assemble(module):
     if not os.path.exists(PTXAS):
         return
     with tempfile.NamedTemporaryFile("w", suffix=".ptx", delete=False) as fh:
-        fh.write(print_module(module))
+        fh.write(str(module))
     res = subprocess.run([PTXAS, "-arch=sm_89", fh.name, "-o", os.devnull], capture_output=True, text=True)
     os.unlink(fh.name)
-    assert res.returncode == 0, res.stderr + print_module(module)
+    assert res.returncode == 0, res.stderr + str(module)

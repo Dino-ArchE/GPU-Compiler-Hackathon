@@ -156,8 +156,10 @@ class Unroll(FunctionPass):
     def expand(self, function, s, factor, live):
         body, header, latch, iv, t = s["body"], s["header"], s["latch"], s["iv"], s["t"]
         full = factor == s["trips"]
-        defined = {r for blk in body for inst in blk.instructions for r in inst.defs()}
-        local = defined - live.live_in[header] - live.live_in[s["exit"]]
+        # a list in definition order, not a set: fresh registers are numbered in this order,
+        # and set order follows memory addresses, so the PTX would change from run to run
+        defined = dict.fromkeys(r for blk in body for inst in blk.instructions for r in inst.defs())
+        local = [r for r in defined if r not in live.live_in[header] and r not in live.live_in[s["exit"]]]
         k0 = function.blocks.index(header)
 
         original = {blk: list(blk.instructions) for blk in body}    # copy 0 reuses the blocks

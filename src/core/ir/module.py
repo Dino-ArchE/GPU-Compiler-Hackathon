@@ -21,4 +21,24 @@ class Module:
         return sym
 
     def __str__(self):
-        return f".version {self.version}\n.target {self.target}\n.address_size {self.address_size}"
+        """The whole PTX file. Shared arrays are module-scope globals, declared ahead of the
+        entries that use them."""
+        out = [
+            f".version {self.version}",
+            f".target {self.target}",
+            f".address_size {self.address_size}",
+        ]
+        if self.shared:
+            out.append("")
+            for sym, align, nbytes in self.shared:
+                if nbytes is None:   # dynamic shared memory: size comes from the launch
+                    out.append(f".extern .shared .align {align} .b8 {sym}[];")
+                else:
+                    out.append(f".shared .align {align} .b8 {sym}[{nbytes}];")
+        for function in self.functions:
+            out += ["", str(function)]
+        text = "\n".join(out) + "\n"
+        if not text.isascii():
+            bad = sorted({c for c in text if not c.isascii()})
+            raise ValueError(f"PTX must be ASCII; found {bad}")
+        return text

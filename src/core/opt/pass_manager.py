@@ -164,8 +164,7 @@ class PassManager:
             s.removed += before - function.num_instructions()
             s.seconds += elapsed
         if changed and (name in self.print_after or "all" in self.print_after):
-            from core.ptx.printer import print_function
-            print(f"// ----- after {name} -----\n{print_function(function)}", file=sys.stderr)
+            print(f"// ----- after {name} -----\n{function}", file=sys.stderr)
         return changed
 
     def report(self, file=sys.stderr):

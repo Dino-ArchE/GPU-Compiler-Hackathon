@@ -42,6 +42,17 @@ class Function:
         """Replace every read of register `old` with `new` (see Instruction.replace_use)."""
         return sum(inst.replace_use(old, new) for _, inst in self.instructions())
 
-    def emit(self):
-        param_str = ",".join([str(param) for param in self.params])
-        return f".visible .entry {self.name}({param_str})"
+    def __str__(self):
+        """This entry's PTX text: signature, register declarations, labelled blocks."""
+        params = [f"\t.param .{sym.ptx_type} {sym}" for sym in self.params.values()]
+        if params:
+            out = [f".visible .entry {self.name}(", ",\n".join(params), ")"]
+        else:
+            out = [f".visible .entry {self.name}()"]
+        out.append("{")
+        out += [f"\t{decl}" for decl in self.regs.declarations()]
+        for block in self.blocks:
+            out.append(f"{block.name}:")
+            out += [f"\t{inst}" for inst in block.instructions]
+        out.append("}")
+        return "\n".join(out)

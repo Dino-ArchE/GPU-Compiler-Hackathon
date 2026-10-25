@@ -31,10 +31,10 @@ are fine; ask before implementing a whole phase.
   same `if`); exited threads don't count at `bar.sync`, and shuffles use `activemask`.
 - `ConstantOp` nodes arrive as 1-element buffer args.
 
-## Architecture (LLVM-style: visitor -> our IR -> printer)
+## Architecture (LLVM-style: visitor -> our IR -> str())
 
 Emmy is the frontend + middle end; `ptxas` does register allocation and scheduling. We own the
-step between: a visitor lowers Kernel IR into our own small PTX-level IR, which a printer renders.
+step between: a visitor lowers Kernel IR into our own small PTX-level IR, which prints itself.
 The IR layer exists for clean structure and optional passes, NOT for speed (ptxas already does
 CSE/DCE/LICM). Build passes only after categories 1-2 pass.
 
@@ -47,7 +47,7 @@ already does (CSE/DCE/const-fold). Measure with the runner's `registers` and `me
 Our registers are not SSA: any pass must respect redefinitions (accumulators).
 
 ```
-compile.py                   argv -> KernelInfo -> CodeGen -> optimizer -> print_module -> stdout
+compile.py                   argv -> KernelInfo -> CodeGen -> optimizer -> str(module) -> stdout
 src/core/frontend/           KernelInfo: name, params (arg_order), buffer shapes/dtypes, body
 src/core/ir/                 our IR, data only (+ IRBuilder):
     value.py                 Value base; Immediate, Symbol, Address [base+off], Vector {..}
@@ -56,7 +56,7 @@ src/core/ir/                 our IR, data only (+ IRBuilder):
     opcode.py                Op enum (ld, st, mov, add, setp, bra, ...)
     instruction.py           Instruction(op, types, dsts, srcs, guard, negate, comment); defs/uses.
                              Subclasses (Load, Store, Mov, Sync) are typed constructors that fill
-                             the same fields; they never print themselves. Tensor cores (sm_89
+                             the same fields; they never override __str__. Tensor cores (sm_89
                              PTX, runs on the 5090): Mma (m16n8k8 tf32, fragment layout in its
                              docstring, verified on hardware), CvtTf32, CpAsync/Commit/Wait;
                              Builder.mma_tf32 / split_tf32 (3xTF32: plain tf32 fails 1e-3 tol)
@@ -69,7 +69,6 @@ src/core/ir/                 our IR, data only (+ IRBuilder):
 src/core/ptx/codegen.py      CodeGen: visit() dispatches on node class name (visit_Tile); Kernel IR -> our IR
 src/core/ptx/ops.py          elementwise op table (Assign.op.name -> instructions)
 src/core/ptx/symbol.py       SymbolTable (scalars -> Register, buffers -> Buffer)
-src/core/ptx/printer.py      print_module(Module) -> PTX text; the only code that knows PTX syntax
 src/core/opt/                optimizer over our IR (compile.py -O0|-O1|-O2, default -O2;
                              --passes a,b / --disable a,b / --print-after X|all / --stats). On any optimizer
                              exception compile.py falls back to unoptimized PTX.
@@ -103,7 +102,11 @@ is not a kill. Special registers can only feed `mov`. Each new pass gets a unit 
 Rules: every operand is a `Value` (never a raw str/int). Opcodes, types and state spaces use the
 enums (`Op`, `PtxType`, `StateSpace`); meta.json dtypes go through `PtxType.from_meta` (i32 -> s32). Instruction is not a Value: PTX registers
 are not SSA (accumulators update in place). Block layout order = `set_block` order, and fall-through
-goes to the next block. The visitor emits `ret` itself. `printer.py` never imports codegen.
+goes to the next block. The visitor emits `ret` itself.
+Printing: `str()` is the PTX text at every level: a Value its operand spelling, an Instruction
+its line, a Function its `.entry`, a Module the whole file (and it rejects non-ASCII). `repr()` of
+an Instruction is the debug form used in error messages. Optimizer passes never order by `set`
+iteration of IR objects (id-hashed): register numbering would follow memory addresses.
 
 Phase order: pointwise (p*) -> reductions (r*) -> fused (f*) -> attention (a*) -> matmul (m*)
 -> hidden-set hardening. Attention is easier than matmul: it has no cp.async.

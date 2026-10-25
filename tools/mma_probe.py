@@ -18,7 +18,6 @@ from core.ir import (  # noqa: E402
     CTAID_X, NTID_X, TID_X, Address, Builder, Cmp, Function, Immediate, Instruction, Module, Mov,
     Op, PtxType, StateSpace,
 )
-from core.ptx.printer import print_module
 
 F, S, U, B32 = PtxType.F32, PtxType.S32, PtxType.U32, PtxType.B32
 
@@ -89,4 +88,4 @@ def _selp(b, x, y, p):
 
 
 if __name__ == "__main__":
-    sys.stdout.write(print_module(build()))
+    sys.stdout.write(str(build()))

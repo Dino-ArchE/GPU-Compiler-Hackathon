@@ -17,7 +17,7 @@ class Instruction:
 
     `op` is an Op; `types` holds the dotted modifiers after it (("global", "v4", "f32")) so passes
     can match on them. Subclasses are typed constructors that fill these same fields, so the
-    printer and defs()/uses() treat every instruction alike. Stores and branches have no dsts.
+    __str__ and defs()/uses() treat every instruction alike. Stores and branches have no dsts.
     """
 
     def __init__(self, op, types=(), dsts=(), srcs=(), guard=None, negate=False, comment=None):
@@ -118,6 +118,14 @@ class Instruction:
         clone = Instruction.__new__(type(self))
         clone.__dict__.update(self.__dict__)
         return clone
+
+    def __str__(self):
+        """The PTX line: `@!%p1 ld.global.f32 %f1, [%rd2];  // comment`."""
+        guard = f"@{'!' if self.negate else ''}{self.guard} " if self.guard is not None else ""
+        opcode = ".".join((self.op, *self.types))
+        operands = ", ".join(str(v) for v in (*self.dsts, *self.srcs))
+        text = f"{guard}{opcode} {operands};" if operands else f"{guard}{opcode};"
+        return f"{text}\t// {self.comment}" if self.comment else text
 
     def __repr__(self):
         guard = f"@{'!' if self.negate else ''}{self.guard} " if self.guard is not None else ""

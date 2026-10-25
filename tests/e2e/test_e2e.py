@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # tests/: interp,
 
 from core.frontend import KernelInfo  # noqa: E402
 from core.opt import PassManager, build_pipeline  # noqa: E402
-from core.ptx import CodeGen, print_module  # noqa: E402
+from core.ptx import CodeGen  # noqa: E402
 
 from helpers import PTXAS  # noqa: E402
 from interp import NP_TYPES, run_kernel  # noqa: E402
@@ -83,7 +83,7 @@ def test_matches_expected(problem, level):
     kernel = KernelInfo(ir)
     module = CodeGen(kernel).gen()
     PassManager(build_pipeline(level), verify=True).run(module)
-    print_module(module)                                  # the printer accepts what we run
+    str(module)                                           # the module prints (ASCII, every operand)
     inputs, outputs = seeded_inputs(entry, kernel)
     try:
         got = run_kernel(module, inputs, outputs)
