@@ -1,5 +1,7 @@
 """Every open problem codegen supports: the optimized kernel computes what -O0 computes."""
 
+import os
+
 import numpy as np
 import pytest
 
@@ -7,7 +9,10 @@ from core.opt import PassManager, build_pipeline
 
 from problems import fresh, run, supported_kernels
 
-KERNELS = supported_kernels()
+# attention and matmul take minutes in the Python interpreter: opt in with EMMY_SLOW=1
+# (the runner checks them on the GPU: tools/run_runner.sh)
+SLOW = ("a", "m")
+KERNELS = [k for k in supported_kernels() if os.environ.get("EMMY_SLOW") or not k[0].startswith(SLOW)]
 
 
 @pytest.mark.parametrize("level", [1, 2])

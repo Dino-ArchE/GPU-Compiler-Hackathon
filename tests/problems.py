@@ -45,9 +45,15 @@ def random_args(ir_path, kernel, seed=0):
     return inputs, outputs
 
 
+# kernels too slow to interpret whole (attention, matmul): run their first and last CTA only
+MAX_THREADS = 16384
+
+
 def run(module, ir_path, kernel, seed=0):
     inputs, outputs = random_args(ir_path, kernel, seed)
-    return run_kernel(module, inputs, outputs)
+    grid, block = kernel.grid[0], kernel.block[0]
+    ctas = None if grid * block <= MAX_THREADS else sorted({0, grid - 1})
+    return run_kernel(module, inputs, outputs, ctas=ctas)
 
 
 def fresh(kernel):

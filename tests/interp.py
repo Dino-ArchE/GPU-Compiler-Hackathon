@@ -19,6 +19,7 @@ BITS = {"pred": 1, "b16": 16, "s16": 16, "u16": 16, "f16": 16, "b32": 32, "s32":
 WIDE = {"s16": "s32", "s32": "s64", "u16": "u32", "u32": "u64"}
 NP_TYPES = {"f32": np.float32, "s32": np.int32, "u32": np.uint32, "f64": np.float64, "s64": np.int64}
 SHARED_BASE = 0xFF << 32
+DYNAMIC_SMEM = 100 * 1024         # what an .extern .shared pool gets (the 5090 allows 99 KB/CTA)
 
 
 def f32(x):
@@ -290,9 +291,10 @@ class Thread:
         self.write(dst, rt, r)
 
 
-def run_kernel(module, inputs, outputs, grid=None, block=None):
+def run_kernel(module, inputs, outputs, grid=None, block=None, ctas=None):
     """Run the module's kernel. inputs/outputs: {param name: np.ndarray} (outputs are filled and
-    returned as new arrays). grid/block default to the function's launch."""
+    returned as new arrays). grid/block default to the function's launch. `ctas` runs only those
+    block indices (big kernels: the rest of the output stays as passed in)."""
     f = module.functions[0]
     grid = grid or f.launch_grid
     block = block or f.launch_block
@@ -306,10 +308,10 @@ def run_kernel(module, inputs, outputs, grid=None, block=None):
     for sym, align, nbytes in module.shared:
         off = (off + align - 1) // align * align
         shared_layout[sym] = off
-        off += nbytes
+        off += nbytes if nbytes is not None else DYNAMIC_SMEM   # .extern: sized at launch
 
     nthreads = block[0]
-    for cta in range(grid[0]):
+    for cta in (range(grid[0]) if ctas is None else ctas):
         shared_key = 0xFF0000 + cta
         base = mem.add(shared_key, bytearray(max(off, 1)))
         syms = {s: base + o for s, o in shared_layout.items()}

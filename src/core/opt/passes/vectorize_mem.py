@@ -86,7 +86,8 @@ class VectorizeMemory(FunctionPass):
         between = [i for i in block.instructions[lo:hi + 1] if id(i) not in members]
         space = types[0]
         for other in between:
-            if other.op is Op.BAR or other.op in (Op.ST, Op.RED, Op.ATOM, Op.CP) and other.space is space:
+            # cp.async (and its commit/wait) is a fence too: copies land at the wait, not the issue
+            if other.op in (Op.BAR, Op.CP) or other.op in (Op.ST, Op.RED, Op.ATOM) and other.space is space:
                 return None
             if other.op is Op.LD and other.space is space and op is Op.ST and not self.mem.is_invariant_load(other):
                 return None
