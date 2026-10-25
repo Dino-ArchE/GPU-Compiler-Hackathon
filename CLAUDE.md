@@ -65,8 +65,13 @@ src/core/ir/                 our IR, data only (+ IRBuilder):
     module.py                Module: version/target/address_size + functions
     builder.py               Builder: insertion point, reg(), new_block(), set_block(); typed
                              helpers (load, load_param, store, mov, sync) allocate and RETURN the
-                             result register, LLVM-style; inst(Op.X, ...) is the generic fallback
+                             result register, LLVM-style; also sync/warp_sync, activemask,
+                             shfl_bfly, red, selp, element_address (base + mul.wide index).
+                             inst(Op.X, ...) is the generic fallback. It never folds constants:
+                             optimizer tests build `add imm, imm` through it on purpose
 src/core/ptx/codegen.py      CodeGen: visit() dispatches on node class name (visit_Tile); Kernel IR -> our IR
+                             public: gen(), visit(), visit_<Node>; everything else is a `_`-prefixed
+                             helper. PTX-only idioms belong in Builder (it knows no Kernel IR)
 src/core/ptx/ops.py          elementwise op table (Assign.op.name -> instructions)
 src/core/ptx/symbol.py       SymbolTable (scalars -> Register, buffers -> Buffer)
 src/core/opt/                optimizer over our IR (compile.py -O0|-O1|-O2, default -O2;

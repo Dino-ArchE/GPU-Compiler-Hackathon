@@ -1,8 +1,8 @@
 import math
 
 from core.ir import (
-    CTAID_X, NTID_X, TID_X, Address, Binary, Builder, Cmp, Function, Immediate, Instruction, Load,
-    Mod, Module, Mov, Op, PtxType, Register, StateSpace, Store, Vector,
+    CTAID_X, NTID_X, TID_X, Binary, Builder, Cmp, Function, Immediate, Load,
+    Mod, Module, Mov, Op, PtxType, StateSpace, Store, Vector,
 )
 
 from .ops import lower_elementwise
@@ -95,7 +95,7 @@ class CodeGen:
         self.exit = self.builder.new_block("EXIT")
 
     def gen(self):
-        self.prologue()
+        self._prologue()
         self.visit(self.kernel.body)
         self.builder.set_block(self.exit)
         self.builder.inst(Op.RET)
@@ -114,7 +114,7 @@ class CodeGen:
         for stmt in body:
             self.visit(stmt)
 
-    def prologue(self):
+    def _prologue(self):
         """Not driven by an IR node: turn each param into a global base address, in arg_order."""
         for arg in self.kernel.args:
             generic = self.builder.load_param(self.function.param(arg.name))
@@ -133,7 +133,7 @@ class CodeGen:
                @(gid >= N) bra EXIT    -- gen() places EXIT (holding `ret`) last.
            Barriers inside stay correct: exited threads no longer count at bar.sync, and
            shuffles use the active-lane mask (the reference .cu does the same).
-        3. decode gid into the axes (decode_axes) and define_scalar each axis name.
+        3. decode gid into the axes (_decode_axes) and define_scalar each axis name.
         4. visit the body.
         """
         b = self.builder
@@ -156,11 +156,11 @@ class CodeGen:
             outside = b.setp(Cmp.GE, INDEX_TYPE, gid, Immediate(n, INDEX_TYPE))
             b.bra(self.exit, guard=outside)
 
-        for axis, value in zip(tile.axes, self.decode_axes(tile, gid, extents)):
+        for axis, value in zip(tile.axes, self._decode_axes(tile, gid, extents)):
             self.sym_table.define_scalar(axis.name, value)
         self.visit(tile.body)
 
-    def decode_axes(self, tile, gid, extents):
+    def _decode_axes(self, tile, gid, extents):
         """gid -> one index per axis, row-major: axis i = (gid / stride_i) % extent_i, where
         stride_i is the product of the extents to its right (the first axis needs no %).
 
@@ -173,31 +173,31 @@ class CodeGen:
         strides = [math.prod(extents[i + 1:]) for i in range(len(extents))]
         values = []
         for i, (stride, ext) in enumerate(zip(strides, extents)):
-            v = self.div_index(gid, stride)
-            values.append(v if i == 0 else self.rem_index(v, ext))
+            v = self._div_index(gid, stride)
+            values.append(v if i == 0 else self._rem_index(v, ext))
 
-        raster = self.raster(tile, extents)
+        raster = self._raster(tile, extents)
         if raster is not None:
             gi, oi, g = raster
             ea, eb = extents[gi], extents[oi]
             mi, ni = min(gi, oi), max(gi, oi)
-            sub = self.div_index(gid, strides[ni])
+            sub = self._div_index(gid, strides[ni])
             if mi != 0:
-                sub = self.rem_index(sub, ea * eb)
-            grp = self.div_index(sub, g * eb)
-            within = self.rem_index(sub, g * eb)
+                sub = self._rem_index(sub, ea * eb)
+            grp = self._div_index(sub, g * eb)
+            within = self._rem_index(sub, g * eb)
             if ea % g == 0:
                 size = Immediate(g, INDEX_TYPE)
             else:
-                left = self.builder.binary(Op.SUB, INDEX_TYPE, Immediate(ea, INDEX_TYPE), self.mul_index(grp, g))
+                left = self.builder.binary(Op.SUB, INDEX_TYPE, Immediate(ea, INDEX_TYPE), self._mul_index(grp, g))
                 size = self.builder.binary(Op.MIN, INDEX_TYPE, left, Immediate(g, INDEX_TYPE))
             b = self.builder
-            values[gi] = self.add_index(self.mul_index(grp, g), b.binary(Op.REM, INDEX_TYPE, within, size))
+            values[gi] = self._add_index(self._mul_index(grp, g), b.binary(Op.REM, INDEX_TYPE, within, size))
             values[oi] = b.binary(Op.DIV, INDEX_TYPE, within, size)
         return values
 
     @staticmethod
-    def raster(tile, extents):
+    def _raster(tile, extents):
         """(grouped axis, other axis, G) when grouped rasterization applies, else None."""
         if not (tile.raster_group and tile.raster_axes):
             return None
@@ -220,7 +220,7 @@ class CodeGen:
         if len(load.names) not in (1, 2, 4):
             raise NotImplementedError(f"Load of {len(load.names)} values from {load.input}")
         buffer = self.sym_table.buffer(load.input)
-        addr = self.address(buffer, load.index)
+        addr = self._address(buffer, load.index)
         dsts = [self.builder.reg(buffer.elem_type) for _ in load.names]
         dst = dsts[0] if len(dsts) == 1 else Vector(dsts)
         self.builder.append(Load(buffer.space, buffer.elem_type, dst, addr))
@@ -234,11 +234,11 @@ class CodeGen:
         (add -> add.f32, multiply -> mul.f32, relu -> max.f32 x, 0, ...). Result type from
         assign.dtype. Defines assign.name as a scalar.
         """
-        self.assign(assign, assign.dtype)
+        self._assign(assign, assign.dtype)
 
-    def assign(self, assign, dtype):
+    def _assign(self, assign, dtype):
         """Shared by Assign and combine_states, whose Assigns carry dtype=None (use the state's)."""
-        args = [self.operand(arg) for arg in assign.args]
+        args = [self._operand(arg) for arg in assign.args]
         ptx_type = PtxType.from_dtype(assign.dtype or dtype)
         result = lower_elementwise(self.builder, assign.op.name, ptx_type, args)
         self.sym_table.define_scalar(assign.name, result)
@@ -255,13 +255,13 @@ class CodeGen:
         if write.swizzle != "NONE":
             raise NotImplementedError(f"swizzled Write ({write.swizzle}) to {write.output}")
         buffer = self.sym_table.buffer(write.output)
-        addr = self.address(buffer, write.index)
-        srcs = [self.operand(v) for v in write.values]
+        addr = self._address(buffer, write.index)
+        srcs = [self._operand(v) for v in write.values]
         if write.atomic:
             # partial results from many blocks: red.add into a buffer meta.json zeroes first
             if len(srcs) != 1:
                 raise NotImplementedError(f"vector atomic Write to {write.output}")
-            self.builder.append(Instruction(Op.RED, (buffer.space, Mod.ADD, buffer.elem_type), srcs=[addr, srcs[0]]))
+            self.builder.red(buffer.space, buffer.elem_type, addr, srcs[0])
             return
         src = srcs[0] if len(srcs) == 1 else Vector(srcs)
         self.builder.store(buffer.space, buffer.elem_type, addr, src)
@@ -269,14 +269,14 @@ class CodeGen:
     def visit_StridedLoop(self, loop):
         """for axis = start; axis < end; axis += step  (a thread's slice of a reduction)."""
         end = loop.end if loop.end is not None else Immediate(loop.axis.extent.as_static(), INDEX_TYPE)
-        self.loop(loop, self.visit(loop.start), self.index_value(end), self.visit(loop.step))
+        self._loop(loop, self.visit(loop.start), self._index_value(end), self.visit(loop.step))
 
     def visit_Loop(self, loop):
         """for axis = 0; axis < extent; axis++  (unroll is left to ptxas)."""
         one = Immediate(1, INDEX_TYPE)
-        self.loop(loop, Immediate(0, INDEX_TYPE), Immediate(loop.axis.extent.as_static(), INDEX_TYPE), one)
+        self._loop(loop, Immediate(0, INDEX_TYPE), Immediate(loop.axis.extent.as_static(), INDEX_TYPE), one)
 
-    def loop(self, loop, start, end, step):
+    def _loop(self, loop, start, end, step):
         """Emit a counted loop over loop.axis:
 
                 axis = start; init accumulators of this loop
@@ -286,7 +286,7 @@ class CodeGen:
             END:
         """
         b = self.builder
-        self.init_accumulators(loop)
+        self._init_accumulators(loop)
         axis = b.mov(INDEX_TYPE, start)   # own copy: the loop updates it in place
         self.sym_table.define_scalar(loop.axis.name, axis)
         head, end_block = b.new_block("LOOP"), b.new_block("LOOP_END")
@@ -294,7 +294,7 @@ class CodeGen:
         b.set_block(head)
         done = b.setp(Cmp.GE, INDEX_TYPE, axis, end)
         b.bra(end_block, guard=done)
-        self.scoped(loop.body)
+        self._scoped(loop.body)
         b.append(Binary(Op.ADD, INDEX_TYPE, axis, axis, step))
         b.bra(head)
         b.set_block(end_block)
@@ -321,8 +321,8 @@ class CodeGen:
         index = copy.smem_index
         if copy.lane_index:
             index = [_Sum(a, b) for a, b in zip(index, copy.lane_index)]
-        dst = self.address(smem, index)
-        src = self.address(self.sym_table.buffer(copy.src), copy.src_index)
+        dst = self._address(smem, index)
+        src = self._address(self.sym_table.buffer(copy.src), copy.src_index)
         # .cg (L2 only) exists for 16-byte copies; smaller ones must use .ca
         level = Mod.CG if copy.nbytes == 16 else Mod.CA
         self.builder.cp_async(dst, src, copy.nbytes, cache=level)
@@ -334,27 +334,27 @@ class CodeGen:
         """Wait until at most `group` committed copy groups are still in flight."""
         self.builder.cp_async_wait(wait.group)
 
-    def init_accumulators(self, loop):
+    def _init_accumulators(self, loop):
         """Accum identity goes before the loop its `axes` names, not at the Accum statement:
         online softmax reads the accumulator before its Accum line."""
         for stmt in _walk(loop.body):
             if (type(stmt).__name__ == "Accum" and loop.axis.name in stmt.axes
                     and id(stmt) not in self.accum_ready and stmt.name not in self.explicit_init):
                 self.accum_ready.add(id(stmt))
-                self.init_accumulator(stmt)
+                self._init_accumulator(stmt)
 
-    def init_accumulator(self, accum):
+    def _init_accumulator(self, accum):
         ptx_type = PtxType.from_dtype(accum.dtype)
         acc = self.builder.mov(ptx_type, Immediate(accum.op.identity, ptx_type))
         self.sym_table.define_scalar(accum.name, acc)
 
     def visit_Accum(self, accum):
         """name <- op(base or name, value). Like an Assign to an existing name; the loop's
-        write-back (scoped) moves the result into the register the next iteration reads."""
+        write-back (_scoped) moves the result into the register the next iteration reads."""
         if accum.name not in self.sym_table.scalars:
-            self.init_accumulator(accum)    # no enclosing loop named it
+            self._init_accumulator(accum)    # no enclosing loop named it
         first = accum.base if accum.base is not None else accum.name
-        args = [self.operand(first), self.operand(accum.value)]
+        args = [self._operand(first), self._operand(accum.value)]
         ptx_type = PtxType.from_dtype(accum.dtype)
         self.sym_table.define_scalar(accum.name, lower_elementwise(self.builder, accum.op.name, ptx_type, args))
 
@@ -362,18 +362,15 @@ class CodeGen:
         """XOR butterfly over `length` lanes: each round, read every state from lane ^ offset
         into state_b, then run combine_states. Afterwards every lane holds the result."""
         # the lanes still running: a guarded partial warp must not name exited lanes
-        mask = self.builder.reg(PtxType.B32)
-        self.builder.append(Instruction(Op.ACTIVEMASK, (PtxType.B32,), dsts=[mask]))
+        mask = self.builder.activemask()
         offset = shuffle.length // 2
         while offset >= 1:
             for state, other in zip(shuffle.state, shuffle.state_b):
                 src = self.sym_table.scalar(state)
-                dst = self.builder.reg(type(src).PTX_TYPE)   # same register kind as the state
-                srcs = [src, Immediate(offset, PtxType.U32), WARP_CLAMP, mask]
-                self.builder.append(Instruction(Op.SHFL, (Mod.SYNC, Mod.BFLY, PtxType.B32), dsts=[dst], srcs=srcs))
+                dst = self.builder.shfl_bfly(src, Immediate(offset, PtxType.U32), WARP_CLAMP, mask)
                 self.sym_table.define_scalar(other, dst)
             for combine in shuffle.combine_states:
-                self.assign(combine, shuffle.dtype)
+                self._assign(combine, shuffle.dtype)
             offset //= 2
 
     def visit_TreeHalve(self, halve):
@@ -398,7 +395,7 @@ class CodeGen:
         if halve.inner is not None:
             inner_name, scale = halve.inner
             inner = self.sym_table.scalar(inner_name)
-            slot = lambda t: self.add_index(self.mul_index(t, scale), inner)  # noqa: E731
+            slot = lambda t: self._add_index(self._mul_index(t, scale), inner)  # noqa: E731
             root = inner
         else:
             slot = lambda t: t  # noqa: E731
@@ -410,19 +407,19 @@ class CodeGen:
             b.bra(skip, guard=active, negate=True)
             partner = b.add(INDEX_TYPE, tid, Immediate(s, INDEX_TYPE))
             for buf, state, other in zip(bufs, halve.state, halve.state_b):
-                self.sym_table.define_scalar(state, b.load(buf.space, buf.elem_type, self.element(buf, slot(tid))))
-                self.sym_table.define_scalar(other, b.load(buf.space, buf.elem_type, self.element(buf, slot(partner))))
+                self.sym_table.define_scalar(state, b.load(buf.space, buf.elem_type, self._element(buf, slot(tid))))
+                self.sym_table.define_scalar(other, b.load(buf.space, buf.elem_type, self._element(buf, slot(partner))))
             for combine in halve.combine_states:
-                self.assign(combine, halve.dtype)
+                self._assign(combine, halve.dtype)
             for buf, state in zip(bufs, halve.state):
-                addr, value = self.element(buf, slot(tid)), self.sym_table.scalar(state)
+                addr, value = self._element(buf, slot(tid)), self.sym_table.scalar(state)
                 b.append(Store(buf.space, buf.elem_type, addr, value, guard=writer))
             b.set_block(skip)
-            self.barrier(halve.barrier_id, halve.barrier_count)
+            self._barrier(halve.barrier_id, halve.barrier_count)
             s //= 2
         # every thread reads the total; this also replaces names only set inside the branches
         for buf, state in zip(bufs, halve.state):
-            self.sym_table.define_scalar(state, b.load(buf.space, buf.elem_type, self.element(buf, root)))
+            self.sym_table.define_scalar(state, b.load(buf.space, buf.elem_type, self._element(buf, root)))
 
     def visit_Smem(self, smem):
         """Declares a shared array (printed at module scope); emits no instructions."""
@@ -432,10 +429,10 @@ class CodeGen:
         if not self.kernel.smem_bytes:
             base = self.module.add_shared(smem.name, align, nbytes)
         else:
-            base = self.pool_slice(smem.name, align, nbytes)
+            base = self._pool_slice(smem.name, align, nbytes)
         self.sym_table.define_buffer(smem.name, Buffer(StateSpace.SHARED, base, smem.extents, elem_type))
 
-    def pool_slice(self, name, align, nbytes):
+    def _pool_slice(self, name, align, nbytes):
         """Dynamic shared memory: static .shared is capped at 48 KB, so when meta.json passes
         smem_bytes every Smem array is carved out of one .extern pool at an aligned offset.
         Returns a register holding the array's shared address."""
@@ -453,35 +450,35 @@ class CodeGen:
         b = self.builder
         taken = self.visit(cond.cond)
         if isinstance(taken, Immediate):   # folded at compile time
-            self.scoped(cond.body if taken.value else cond.else_body)
+            self._scoped(cond.body if taken.value else cond.else_body)
             return
         end = b.new_block("ENDIF")
         other = b.new_block("ELSE") if cond.else_body else end
         b.bra(other, guard=taken, negate=True)
-        self.scoped(cond.body)
+        self._scoped(cond.body)
         if cond.else_body:
             b.bra(end)
             b.set_block(other)
-            self.scoped(cond.else_body)
+            self._scoped(cond.else_body)
         b.set_block(end)
 
     def visit_Sync(self, sync):
         """bar.sync 0 (whole CTA), bar.warp.sync (one warp), or a named barrier over `count`."""
         if sync.warp:
-            self.builder.append(Instruction(Op.BAR, (Mod.WARP, Mod.SYNC), srcs=[FULL_MASK]))
+            self.builder.warp_sync(FULL_MASK)
         else:
-            self.barrier(sync.barrier_id, sync.count)
+            self._barrier(sync.barrier_id, sync.count)
 
-    def barrier(self, barrier_id, count=None):
+    def _barrier(self, barrier_id, count=None):
+        """Barrier 0 is the whole CTA (a count there is redundant); a named one needs its count."""
         if barrier_id == 0:
             self.builder.sync(0)
             return
         if count is None:
             raise ValueError(f"named barrier {barrier_id} needs a thread count")
-        ids = [Immediate(barrier_id, PtxType.U32), Immediate(count, PtxType.U32)]
-        self.builder.append(Instruction(Op.BAR, (Mod.SYNC,), srcs=ids))
+        self.builder.sync(barrier_id, count)
 
-    def scoped(self, body):
+    def _scoped(self, body):
         """Visit a loop body or a Cond arm. A name that existed before and was rebound inside
         (Accum, a combine, an update) gets its new value moved back into its old register, so
         code after the body, or the next iteration, reads one fixed register on every path."""
@@ -516,7 +513,7 @@ class CodeGen:
                 return Immediate(int(_compare(binary.op, left.value, right.value)), PtxType.PRED)
             return self.builder.setp(INDEX_CMP[binary.op], INDEX_TYPE, left, right)
         if binary.op in INDEX_LOGIC:
-            return self.logic(binary.op, left, right)
+            return self._logic(binary.op, left, right)
         if binary.op not in INDEX_ARITH:
             raise NotImplementedError(f"index operator {binary.op!r}")
         # PTX needs at least one register operand, so two literals are folded here
@@ -528,7 +525,7 @@ class CodeGen:
             return self.builder.binary(Op.XOR, PtxType.B32, left, right)
         return self.builder.binary(INDEX_ARITH[binary.op], INDEX_TYPE, left, right)
 
-    def logic(self, op, left, right):
+    def _logic(self, op, left, right):
         """&& / || on predicates; a folded (constant) side decides or drops out."""
         for const, other in ((left, right), (right, left)):
             if isinstance(const, Immediate):
@@ -545,16 +542,14 @@ class CodeGen:
         if isinstance(cond, Immediate):
             return self.visit(ternary.if_true if cond.value else ternary.if_false)
         a, b = self.visit(ternary.if_true), self.visit(ternary.if_false)
-        dst = self.builder.reg(INDEX_TYPE)
-        self.builder.append(Instruction(Op.SELP, (INDEX_TYPE,), dsts=[dst], srcs=[a, b, cond]))
-        return dst
+        return self.builder.selp(INDEX_TYPE, a, b, cond)
 
     def visit__Sum(self, node):
-        return self.add_index(self.visit(node.left), self.visit(node.right))
+        return self._add_index(self.visit(node.left), self.visit(node.right))
 
     # ------------------------------------------------------------------ helpers
 
-    def address(self, buffer, index):
+    def _address(self, buffer, index):
         """Kernel IR index tuple -> Address of that element in `buffer`.
 
         flat = sum(idx_i * stride_i) (row-major; an empty index means 0), then
@@ -565,50 +560,42 @@ class CodeGen:
         for idx, stride in zip(index, buffer.strides):
             term = self.visit(idx)
             if stride != 1:
-                term = self.mul_index(term, stride)
-            flat = term if flat is None else self.add_index(flat, term)
+                term = self._mul_index(term, stride)
+            flat = term if flat is None else self._add_index(flat, term)
 
-        return self.element(buffer, Immediate(0, INDEX_TYPE) if flat is None else flat)
+        return self._element(buffer, Immediate(0, INDEX_TYPE) if flat is None else flat)
 
-    def element(self, buffer, flat):
+    def _element(self, buffer, flat):
         """Address of element `flat` (a flattened index Value) of `buffer`."""
-        nbytes = buffer.elem_type.nbytes
-        # constant index: the byte offset goes straight into [base+off]
-        if isinstance(flat, Immediate):
-            return Address(buffer.base, flat.value * nbytes)
-        b = self.builder
-        # a static shared array is a Symbol; ld/st need its address in a register for [reg]
-        base = buffer.base if isinstance(buffer.base, Register) else b.mov(PtxType.U64, buffer.base)
-        offset = b.mul_wide(flat, Immediate(nbytes, INDEX_TYPE))
-        return Address(b.add(PtxType.S64, base, offset))
+        return self.builder.element_address(buffer.base, flat, buffer.elem_type.nbytes)
 
-    def div_index(self, value, k):
+    def _div_index(self, value, k):
         if k == 1:
             return value
         if isinstance(value, Immediate):
             return Immediate(int(value.value / k), INDEX_TYPE)
         return self.builder.binary(Op.DIV, INDEX_TYPE, value, Immediate(k, INDEX_TYPE))
 
-    def rem_index(self, value, k):
+    def _rem_index(self, value, k):
         if isinstance(value, Immediate):
             return Immediate(value.value % k, INDEX_TYPE)
         return self.builder.binary(Op.REM, INDEX_TYPE, value, Immediate(k, INDEX_TYPE))
 
-    def mul_index(self, value, k):
+    def _mul_index(self, value, k):
         if isinstance(value, Immediate):
             return Immediate(value.value * k, INDEX_TYPE)
         return self.builder.mul(INDEX_TYPE, value, Immediate(k, INDEX_TYPE))
 
-    def add_index(self, a, b):
+    def _add_index(self, a, b):
         if isinstance(a, Immediate) and isinstance(b, Immediate):
             return Immediate(a.value + b.value, INDEX_TYPE)
         return self.builder.add(INDEX_TYPE, a, b)
 
-    def index_value(self, value):
+    def _index_value(self, value):
         """A loop bound given either as an IR expression or already as a Value."""
         return value if isinstance(value, Immediate) else self.visit(value)
 
-    def operand(self, name_or_expr):
+    def _operand(self, name_or_expr):
         """An Assign/Write argument: a scalar's name, or (defensively) an expression node."""
         if isinstance(name_or_expr, str):
             return self.sym_table.scalar(name_or_expr)

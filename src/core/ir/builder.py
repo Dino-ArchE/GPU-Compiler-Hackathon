@@ -3,8 +3,9 @@ from .instruction import (
     Setp, Store, Sync, Unary,
 )
 from .opcode import Mod, Op
+from .reg import Register
 from .type_enum import PtxType, StateSpace
-from .value import Address
+from .value import Address, Immediate
 
 
 class Builder:
@@ -55,8 +56,51 @@ class Builder:
         self.append(Mov(ptx_type, dst, src))
         return dst
 
-    def sync(self, barrier_id=0):
-        return self.append(Sync(barrier_id))
+    def sync(self, barrier_id=0, count=None):
+        """bar.sync: the whole CTA at barrier 0, or `count` threads at a named barrier."""
+        return self.append(Sync(barrier_id, count))
+
+    def warp_sync(self, mask):
+        """bar.warp.sync mask: reconverge the lanes in `mask` (an Immediate or a register)."""
+        return self.append(Instruction(Op.BAR, (Mod.WARP, Mod.SYNC), srcs=[mask]))
+
+    def activemask(self):
+        """The lanes of this warp still executing, as a .b32 mask (for shfl's membermask)."""
+        dst = self.reg(PtxType.B32)
+        self.append(Instruction(Op.ACTIVEMASK, (PtxType.B32,), dsts=[dst]))
+        return dst
+
+    def shfl_bfly(self, src, lane_xor, clamp, mask):
+        """shfl.sync.bfly.b32: read `src` from lane (this lane ^ lane_xor). 32-bit data only;
+        the result gets the same register kind as src, so an f32 stays in an %f register."""
+        dst = self.reg(type(src).PTX_TYPE)
+        self.append(Instruction(Op.SHFL, (Mod.SYNC, Mod.BFLY, PtxType.B32), dsts=[dst],
+                                srcs=[src, lane_xor, clamp, mask]))
+        return dst
+
+    def red(self, space, ptx_type, addr, src, op=Mod.ADD):
+        """red.<space>.<op>.<type> [addr], src: atomic read-modify-write with no result."""
+        return self.append(Instruction(Op.RED, (space, op, ptx_type), srcs=[addr, src]))
+
+    def selp(self, ptx_type, a, b, pred):
+        """pred ? a : b, without a branch (both sides already computed)."""
+        dst = self.reg(ptx_type)
+        self.append(Instruction(Op.SELP, (ptx_type,), dsts=[dst], srcs=[a, b, pred]))
+        return dst
+
+    def element_address(self, base, index, nbytes):
+        """Address of element `index` in an array of `nbytes`-sized elements at `base`.
+
+        base: a Register (global or shared address) or a Symbol (static shared array);
+        index: an s32 Value. A constant index folds into the [base+offset] operand; otherwise
+        base + mul.wide.s32(index, nbytes), the 64-bit byte offset PTX addresses need.
+        """
+        if isinstance(index, Immediate):
+            return Address(base, index.value * nbytes)
+        # a Symbol cannot be added to: move its address into a register first
+        reg = base if isinstance(base, Register) else self.mov(PtxType.U64, base)
+        offset = self.mul_wide(index, Immediate(nbytes, PtxType.S32))
+        return Address(self.add(PtxType.S64, reg, offset))
 
     # ------------------------------------------------------------------ async copy, tensor cores
 

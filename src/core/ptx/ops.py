@@ -16,7 +16,7 @@ for rtol 1e-4, so tanh and erf are formulas over exp.
 
 import math
 
-from core.ir import Cmp, Immediate, Instruction, Mod, Op, PtxType, Register
+from core.ir import Cmp, Immediate, Mod, Op, PtxType, Register
 
 LOG2E = math.log2(math.e)
 LN2 = math.log(2.0)
@@ -34,9 +34,7 @@ def _imm(value, t):
 
 def _select(b, t, pred, a, c):
     """pred ? a : c"""
-    dst = b.reg(t)
-    b.append(Instruction(Op.SELP, (t,), dsts=[dst], srcs=[a, c, pred]))
-    return dst
+    return b.selp(t, a, c, pred)
 
 
 def _mask(b, t, pred):

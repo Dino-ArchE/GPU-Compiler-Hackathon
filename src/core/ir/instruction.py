@@ -195,10 +195,13 @@ class Mov(Instruction):
 
 
 class Sync(Instruction):
-    """bar.sync id: block-wide barrier."""
+    """bar.sync id[, count]: wait for `count` threads (default: the whole CTA) at barrier `id`."""
 
-    def __init__(self, barrier_id=0, **kw):
-        super().__init__(Op.BAR, (Mod.SYNC,), srcs=[Immediate(barrier_id, PtxType.U32)], **kw)
+    def __init__(self, barrier_id=0, count=None, **kw):
+        srcs = [Immediate(barrier_id, PtxType.U32)]
+        if count is not None:
+            srcs.append(Immediate(count, PtxType.U32))
+        super().__init__(Op.BAR, (Mod.SYNC,), srcs=srcs, **kw)
 
 
 class CpAsync(Instruction):
