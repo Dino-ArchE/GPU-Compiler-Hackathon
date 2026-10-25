@@ -1,0 +1,13 @@
+    Tile[a0] (N=11)
+        in0__u0 = load x0[((a0 * 3) + 0)]
+        in1__u0 = load x1[((a0 * 3) + 0)]
+        f32 v0__u0 = multiply(in0__u0, in1__u0)
+        in0__u1 = load x0[((a0 * 3) + 1)]
+        in1__u1 = load x1[((a0 * 3) + 1)]
+        f32 v0__u1 = multiply(in0__u1, in1__u1)
+        in0__u2 = load x0[((a0 * 3) + 2)]
+        in1__u2 = load x1[((a0 * 3) + 2)]
+        f32 v0__u2 = multiply(in0__u2, in1__u2)
+        mul[((a0 * 3) + 0)] = v0__u0
+        mul[((a0 * 3) + 1)] = v0__u1
+        mul[((a0 * 3) + 2)] = v0__u2

@@ -34,7 +34,10 @@ class PtxType(StrEnum):
 
     @classmethod
     def from_meta(cls, dtype):
-        """meta.json / runner dtype -> PtxType. Their ints are i32/i64; PTX spells signed ints s32/s64."""
+        """meta.json / runner dtype -> PtxType. Their ints are i32/i64; PTX spells signed ints s32/s64.
+        A bool value (a comparison result) lives in a predicate register."""
+        if dtype == "bool":
+            return cls.PRED
         return cls("s" + dtype[1:] if dtype.startswith("i") else dtype)
 
 

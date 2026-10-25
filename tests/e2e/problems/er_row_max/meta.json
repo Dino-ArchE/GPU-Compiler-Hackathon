@@ -1,0 +1,54 @@
+{
+ "id": "er_row_max",
+ "code": "torch.randn(32, 1000).amax(-1)",
+ "rtol": 0.0001,
+ "atol": 0.0001,
+ "graph_inputs": [
+  "x"
+ ],
+ "graph_outputs": [
+  "amax"
+ ],
+ "kernels": [
+  {
+   "node": "amax",
+   "entry": "k_amax_reduce",
+   "arg_order": [
+    "x",
+    "amax"
+   ],
+   "grid": [
+    32,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "x",
+     "dtype": "f32",
+     "shape": [
+      32,
+      1000
+     ],
+     "seed": 0
+    },
+    {
+     "name": "amax",
+     "dtype": "f32",
+     "shape": [
+      32
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

@@ -1,0 +1,66 @@
+{
+ "id": "ep_col_scale",
+ "code": "x = torch.randn(64, 256); s = torch.randn(64, 1); x * s",
+ "rtol": 0,
+ "atol": 0,
+ "graph_inputs": [
+  "x",
+  "s"
+ ],
+ "graph_outputs": [
+  "mul"
+ ],
+ "kernels": [
+  {
+   "node": "mul",
+   "entry": "k_mul_pointwise",
+   "arg_order": [
+    "s",
+    "x",
+    "mul"
+   ],
+   "grid": [
+    16,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "s",
+     "dtype": "f32",
+     "shape": [
+      64,
+      1
+     ],
+     "seed": 1
+    },
+    {
+     "name": "x",
+     "dtype": "f32",
+     "shape": [
+      64,
+      256
+     ],
+     "seed": 0
+    },
+    {
+     "name": "mul",
+     "dtype": "f32",
+     "shape": [
+      64,
+      256
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

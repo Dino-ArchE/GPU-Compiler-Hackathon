@@ -1,0 +1,64 @@
+{
+ "id": "ep_rsqrt",
+ "code": "torch.rsqrt(torch.abs(torch.randn(4096)) + 1.0)",
+ "rtol": 0.0001,
+ "atol": 1e-05,
+ "graph_inputs": [
+  "x"
+ ],
+ "graph_outputs": [
+  "rsqrt"
+ ],
+ "kernels": [
+  {
+   "node": "rsqrt",
+   "entry": "k_rsqrt_pointwise",
+   "arg_order": [
+    "add_c1",
+    "x",
+    "rsqrt"
+   ],
+   "grid": [
+    4,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "add_c1",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "data": [
+      1.0
+     ]
+    },
+    {
+     "name": "x",
+     "dtype": "f32",
+     "shape": [
+      4096
+     ],
+     "seed": 0
+    },
+    {
+     "name": "rsqrt",
+     "dtype": "f32",
+     "shape": [
+      4096
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

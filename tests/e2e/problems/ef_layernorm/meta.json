@@ -1,0 +1,119 @@
+{
+ "id": "ef_layernorm",
+ "code": "x = torch.randn(32, 512); w = torch.randn(512); b = torch.randn(512); (x - x.mean(-1, keepdim=True)) / torch.sqrt(((x - x.mean(-1, keepdim=True)) ** 2).mean(-1, keepdim=True) + 1e-5) * w + b",
+ "rtol": 0.001,
+ "atol": 0.0001,
+ "graph_inputs": [
+  "x",
+  "w",
+  "b"
+ ],
+ "graph_outputs": [
+  "add_1"
+ ],
+ "kernels": [
+  {
+   "node": "add_1",
+   "entry": "k_mean_reduce_a9c3fe",
+   "arg_order": [
+    "mean_1_count",
+    "mean_2_count",
+    "add_c1",
+    "mean_count",
+    "x",
+    "w",
+    "b",
+    "add_1"
+   ],
+   "grid": [
+    32,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "mean_1_count",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "data": [
+      512.0
+     ]
+    },
+    {
+     "name": "mean_2_count",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "data": [
+      512.0
+     ]
+    },
+    {
+     "name": "add_c1",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "data": [
+      1e-05
+     ]
+    },
+    {
+     "name": "mean_count",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "data": [
+      512.0
+     ]
+    },
+    {
+     "name": "x",
+     "dtype": "f32",
+     "shape": [
+      32,
+      512
+     ],
+     "seed": 0
+    },
+    {
+     "name": "w",
+     "dtype": "f32",
+     "shape": [
+      512
+     ],
+     "seed": 1
+    },
+    {
+     "name": "b",
+     "dtype": "f32",
+     "shape": [
+      512
+     ],
+     "seed": 2
+    },
+    {
+     "name": "add_1",
+     "dtype": "f32",
+     "shape": [
+      32,
+      512
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

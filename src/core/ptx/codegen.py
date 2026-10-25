@@ -2,7 +2,7 @@ import math
 
 from core.ir import (
     CTAID_X, NTID_X, TID_X, Address, Binary, Builder, Cmp, Function, Immediate, Instruction, Load,
-    Module, Mov, Op, PtxType, Register, StateSpace, Vector,
+    Module, Mov, Op, PtxType, Register, StateSpace, Store, Vector,
 )
 
 from .ops import lower_elementwise
@@ -382,8 +382,16 @@ class CodeGen:
             for s = length/2 .. 1:  if tid < s: buf[tid] = combine(buf[tid], buf[tid + s])
                                     bar.sync
             state = buf[0]
+
+        When the tree is indexed by `warp`, all 32 lanes of a warp share one slot: only lane 0
+        stores, so each slot has one writer (a read-modify-write by every lane is a data race
+        that only works while the warp happens to run in lockstep). The other lanes' sums are
+        dropped anyway, since everyone reloads the root afterwards.
         """
         b = self.builder
+        writer = None
+        if halve.tid_var == "warp":
+            writer = b.setp(Cmp.EQ, INDEX_TYPE, self.sym_table.scalar("lane"), Immediate(0, INDEX_TYPE))
         tid = self.sym_table.scalar(halve.tid_var)
         bufs = [self.sym_table.buffer(name) for name in halve.bufs]
         # segmented layout: slot(t) = t*scale + inner_var, root = inner_var (flat: t and 0)
@@ -407,7 +415,8 @@ class CodeGen:
             for combine in halve.combine_states:
                 self.assign(combine, halve.dtype)
             for buf, state in zip(bufs, halve.state):
-                b.store(buf.space, buf.elem_type, self.element(buf, slot(tid)), self.sym_table.scalar(state))
+                addr, value = self.element(buf, slot(tid)), self.sym_table.scalar(state)
+                b.append(Store(buf.space, buf.elem_type, addr, value, guard=writer))
             b.set_block(skip)
             self.barrier(halve.barrier_id, halve.barrier_count)
             s //= 2

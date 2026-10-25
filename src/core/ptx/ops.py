@@ -4,16 +4,19 @@ Each lowering takes (builder, ptx_type, *args) with args as Values and returns t
 Register. The op set is the f32 one Emmy's own renderer accepts (op_to_expr); composite ops
 (gelu, silu, softplus) are already decomposed into these before Kernel IR.
 
+Masks: a comparison whose result is typed bool is a predicate register (setp), which `where`
+and the logical ops consume directly; typed f32 it is Emmy's 1.0 / 0.0 mask convention, and any
+nonzero value counts as true.
+
 Accuracy: arithmetic, sqrt and reciprocal are IEEE-rounded (.rn). PTX has no exact exp/log/sin,
 only .approx forms (~2 ulp) on a power-of-two base, so those are built from ex2/lg2 with a
 range reduction where the raw form is not accurate enough. tanh.approx (~2^-11) is too coarse
-for rtol 1e-4, so tanh and erf are formulas over exp. Masks follow Emmy's convention: a
-comparison yields 1.0 / 0.0 in the result type, and any nonzero value counts as true.
+for rtol 1e-4, so tanh and erf are formulas over exp.
 """
 
 import math
 
-from core.ir import Cmp, Immediate, Instruction, Op, PtxType
+from core.ir import Cmp, Immediate, Instruction, Op, PtxType, Register
 
 LOG2E = math.log2(math.e)
 LN2 = math.log(2.0)
@@ -41,8 +44,30 @@ def _mask(b, t, pred):
     return _select(b, t, pred, _imm(1, t), _imm(0, t))
 
 
-def _truthy(b, t, x):
+def _value_type(v):
+    """The type an operand holds, for comparing it: an immediate's own type, a register's
+    declared one (32/64-bit integer registers are declared untyped .b32/.b64; compare signed)."""
+    if isinstance(v, Immediate):
+        return v.ptx_type
+    t = type(v).PTX_TYPE
+    return {PtxType.B32: PtxType.S32, PtxType.B64: PtxType.S64}.get(t, t)
+
+
+def _is_pred(v):
+    return isinstance(v, Register) and _value_type(v) is PtxType.PRED
+
+
+def _truthy(b, x):
+    """x as a predicate: a bool is one already, a number is true when nonzero."""
+    if _is_pred(x):
+        return x
+    t = _value_type(x)
     return b.setp(Cmp.NE, t, x, _imm(0, t))
+
+
+def _result(b, t, pred):
+    """A predicate as the Assign's result type: itself for bool, else a 1 / 0 mask."""
+    return pred if t is PtxType.PRED else _mask(b, t, pred)
 
 
 def _exp(b, t, x):
@@ -110,11 +135,12 @@ def _pow(b, t, x, y):
 
 
 def _compare(cmp):
-    return lambda b, t, x, y: _mask(b, t, b.setp(cmp, t, x, y))
+    # the comparison runs at the operands' type; the result may be bool (a predicate)
+    return lambda b, t, x, y: _result(b, t, b.setp(cmp, _value_type(x), x, y))
 
 
 def _logical(op):
-    return lambda b, t, x, y: _mask(b, t, b.binary(op, PtxType.PRED, _truthy(b, t, x), _truthy(b, t, y)))
+    return lambda b, t, x, y: _result(b, t, b.binary(op, PtxType.PRED, _truthy(b, x), _truthy(b, y)))
 
 
 ELEMENTWISE = {
@@ -151,8 +177,8 @@ ELEMENTWISE = {
     "greater_equal": _compare(Cmp.GE),
     "bitwise_and":   _logical(Op.AND),
     "bitwise_or":    _logical(Op.OR),
-    "bitwise_not":   lambda b, t, x: _mask(b, t, b.setp(Cmp.EQ, t, x, _imm(0, t))),
-    "where":         lambda b, t, c, x, y: _select(b, t, _truthy(b, t, c), x, y),
+    "bitwise_not":   lambda b, t, x: _result(b, t, b.unary(Op.NOT, PtxType.PRED, _truthy(b, x))),
+    "where":         lambda b, t, c, x, y: _select(b, t, _truthy(b, c), x, y),
 }
 
 

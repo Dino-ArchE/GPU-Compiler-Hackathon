@@ -1,0 +1,7 @@
+    Tile[a0] (N=1024)
+        in0__u0, in0__u1, in0__u2, in0__u3 = load x[((a0 * 4) + 0)]
+        f32 v0__u0 = sigmoid(in0__u0)
+        f32 v0__u1 = sigmoid(in0__u1)
+        f32 v0__u2 = sigmoid(in0__u2)
+        f32 v0__u3 = sigmoid(in0__u3)
+        sigmoid[((a0 * 4) + 0)] = (v0__u0, v0__u1, v0__u2, v0__u3)

@@ -1,0 +1,11 @@
+    Tile[a0] (N=1024)
+        in0__u0, in0__u1, in0__u2, in0__u3 = load x[((a0 * 4) + 0)]
+        f32 v0__u0 = abs(in0__u0)
+        f32 v1__u0 = sqrt(v0__u0)
+        f32 v0__u1 = abs(in0__u1)
+        f32 v1__u1 = sqrt(v0__u1)
+        f32 v0__u2 = abs(in0__u2)
+        f32 v1__u2 = sqrt(v0__u2)
+        f32 v0__u3 = abs(in0__u3)
+        f32 v1__u3 = sqrt(v0__u3)
+        sqrt[((a0 * 4) + 0)] = (v1__u0, v1__u1, v1__u2, v1__u3)
