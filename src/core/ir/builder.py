@@ -75,10 +75,20 @@ class Builder:
         return self.binary(Op.MUL, ptx_type, a, b, mode=None if ptx_type.is_float else "lo")
 
     def mad(self, ptx_type, a, b, c):
-        """a * b + c; integers keep the low half (mad.lo), like mul."""
+        """a * b + c. Integers keep the low half (mad.lo); floats are one fused, rounded
+        operation (fma.rn: PTX requires a rounding mode on float multiply-add)."""
         dst = self.reg(ptx_type)
-        mode = () if ptx_type.is_float else ("lo",)
-        self.append(Instruction(Op.MAD, (*mode, ptx_type), dsts=[dst], srcs=[a, b, c]))
+        if ptx_type.is_float:
+            self.append(Instruction(Op.FMA, ("rn", ptx_type), dsts=[dst], srcs=[a, b, c]))
+        else:
+            self.append(Instruction(Op.MAD, ("lo", ptx_type), dsts=[dst], srcs=[a, b, c]))
+        return dst
+
+    def cvt(self, dst_type, src_type, a, mode=None):
+        """cvt[.mode].<dst>.<src>: convert a value; mode rounds (rni = to nearest integer)."""
+        dst = self.reg(dst_type)
+        types = (mode, dst_type, src_type) if mode else (dst_type, src_type)
+        self.append(Instruction(Op.CVT, types, dsts=[dst], srcs=[a]))
         return dst
 
     def unary(self, op, ptx_type, a, mode=None):

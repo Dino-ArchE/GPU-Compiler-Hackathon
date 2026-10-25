@@ -31,6 +31,8 @@ class Op(StrEnum):
     SQRT = "sqrt"
     RSQRT = "rsqrt"
     EX2 = "ex2"
+    SIN = "sin"
+    COS = "cos"
     LG2 = "lg2"
     # bitwise
     AND = "and"

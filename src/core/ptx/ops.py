@@ -1,36 +1,158 @@
 """Elementwise ops (Assign.op.name) -> instructions. One entry per op: add a line for a new op.
 
 Each lowering takes (builder, ptx_type, *args) with args as Values and returns the result
-Register. Float results use IEEE-rounded forms (.rn) where PTX has a choice, so outputs match
-the reference; swapping in .approx variants is an optimizer decision, not a codegen one.
+Register. The op set is the f32 one Emmy's own renderer accepts (op_to_expr); composite ops
+(gelu, silu, softplus) are already decomposed into these before Kernel IR.
+
+Accuracy: arithmetic, sqrt and reciprocal are IEEE-rounded (.rn). PTX has no exact exp/log/sin,
+only .approx forms (~2 ulp) on a power-of-two base, so those are built from ex2/lg2 with a
+range reduction where the raw form is not accurate enough. tanh.approx (~2^-11) is too coarse
+for rtol 1e-4, so tanh and erf are formulas over exp. Masks follow Emmy's convention: a
+comparison yields 1.0 / 0.0 in the result type, and any nonzero value counts as true.
 """
 
 import math
 
-from core.ir import Immediate, Op
+from core.ir import Cmp, Immediate, Instruction, Op, PtxType
 
 LOG2E = math.log2(math.e)
+LN2 = math.log(2.0)
+TWO_PI = 2.0 * math.pi
+
+# Abramowitz & Stegun 7.1.26: erf(x) = 1 - (a1 t + ... + a5 t^5) e^(-x^2), t = 1/(1 + p x),
+# for x >= 0; max abs error 1.5e-7
+ERF_P = 0.3275911
+ERF_A = (0.254829592, -0.284496736, 1.421413741, -1.453152027, 1.061405429)
+
+
+def _imm(value, t):
+    return Immediate(value, t)
+
+
+def _select(b, t, pred, a, c):
+    """pred ? a : c"""
+    dst = b.reg(t)
+    b.append(Instruction(Op.SELP, (t,), dsts=[dst], srcs=[a, c, pred]))
+    return dst
+
+
+def _mask(b, t, pred):
+    """A predicate as Emmy's mask value: 1.0 / 0.0 (or 1 / 0 for integers)."""
+    return _select(b, t, pred, _imm(1, t), _imm(0, t))
+
+
+def _truthy(b, t, x):
+    return b.setp(Cmp.NE, t, x, _imm(0, t))
 
 
 def _exp(b, t, x):
     # PTX has only 2^x: e^x = 2^(x * log2(e))
-    return b.unary(Op.EX2, t, b.mul(t, x, Immediate(LOG2E, t)), mode="approx")
+    return b.unary(Op.EX2, t, b.mul(t, x, _imm(LOG2E, t)), mode="approx")
+
+
+def _log(b, t, x):
+    # ln x = log2(x) * ln(2)
+    return b.mul(t, b.unary(Op.LG2, t, x, mode="approx"), _imm(LN2, t))
+
+
+def _sigmoid(b, t, x):
+    # 1 / (1 + e^-x): e^-x overflows to inf for very negative x, giving 0 as it should
+    denom = b.add(t, _exp(b, t, b.unary(Op.NEG, t, x)), _imm(1.0, t))
+    return b.unary(Op.RCP, t, denom, mode="rn")
+
+
+def _tanh(b, t, x):
+    # tanh x = 1 - 2 / (e^(2x) + 1): saturates cleanly to +-1 at both ends
+    e2x = _exp(b, t, b.mul(t, x, _imm(2.0, t)))
+    frac = b.binary(Op.DIV, t, _imm(2.0, t), b.add(t, e2x, _imm(1.0, t)), mode="rn")
+    return b.binary(Op.SUB, t, _imm(1.0, t), frac)
+
+
+def _erf(b, t, x):
+    ax = b.unary(Op.ABS, t, x)
+    tt = b.unary(Op.RCP, t, b.mad(t, ax, _imm(ERF_P, t), _imm(1.0, t)), mode="rn")
+    poly = _imm(ERF_A[-1], t)
+    for a in reversed(ERF_A[:-1]):          # Horner: ((a5 t + a4) t + a3) t ...
+        poly = b.mad(t, poly, tt, _imm(a, t))
+    poly = b.mul(t, poly, tt)
+    gauss = _exp(b, t, b.unary(Op.NEG, t, b.mul(t, ax, ax)))
+    y = b.binary(Op.SUB, t, _imm(1.0, t), b.mul(t, poly, gauss))
+    return _select(b, t, b.setp(Cmp.LT, t, x, _imm(0.0, t)), b.unary(Op.NEG, t, y), y)
+
+
+def _reduce_angle(b, t, x):
+    """x - 2pi * round(x / 2pi): sin/cos.approx are only accurate on [-pi, pi]."""
+    k = b.cvt(t, t, b.mul(t, x, _imm(1.0 / TWO_PI, t)), mode="rni")
+    return b.mad(t, b.unary(Op.NEG, t, k), _imm(TWO_PI, t), x)
+
+
+def _sin(b, t, x):
+    return b.unary(Op.SIN, t, _reduce_angle(b, t, x), mode="approx")
+
+
+def _cos(b, t, x):
+    return b.unary(Op.COS, t, _reduce_angle(b, t, x), mode="approx")
+
+
+def _pow(b, t, x, y):
+    """x^y = 2^(y log2 |x|), with C powf's rules for the cases that formula gets wrong:
+    a negative base is valid only for an integer y (negated when y is odd), and y == 0 -> 1."""
+    r = b.unary(Op.EX2, t, b.mul(t, y, b.unary(Op.LG2, t, b.unary(Op.ABS, t, x), mode="approx")), mode="approx")
+    yi = b.cvt(t, t, y, mode="rni")
+    integral = b.setp(Cmp.EQ, t, y, yi)
+    half = b.cvt(t, t, b.mul(t, yi, _imm(0.5, t)), mode="rmi")      # floor(y / 2)
+    odd = b.setp(Cmp.NE, t, b.mul(t, half, _imm(2.0, t)), yi)
+    negative = b.setp(Cmp.LT, t, x, _imm(0.0, t))
+    r = _select(b, t, b.binary(Op.AND, PtxType.PRED, negative, odd), b.unary(Op.NEG, t, r), r)
+    nan_case = b.binary(Op.AND, PtxType.PRED, negative, b.unary(Op.NOT, PtxType.PRED, integral))
+    r = _select(b, t, nan_case, _imm(math.nan, t), r)
+    return _select(b, t, b.setp(Cmp.EQ, t, y, _imm(0.0, t)), _imm(1.0, t), r)
+
+
+def _compare(cmp):
+    return lambda b, t, x, y: _mask(b, t, b.setp(cmp, t, x, y))
+
+
+def _logical(op):
+    return lambda b, t, x, y: _mask(b, t, b.binary(op, PtxType.PRED, _truthy(b, t, x), _truthy(b, t, y)))
 
 
 ELEMENTWISE = {
-    "add":        lambda b, t, x, y: b.add(t, x, y),
-    "subtract":   lambda b, t, x, y: b.binary(Op.SUB, t, x, y),
-    "multiply":   lambda b, t, x, y: b.mul(t, x, y),
-    "divide":     lambda b, t, x, y: b.binary(Op.DIV, t, x, y, mode="rn"),
-    "maximum":    lambda b, t, x, y: b.binary(Op.MAX, t, x, y),
-    "minimum":    lambda b, t, x, y: b.binary(Op.MIN, t, x, y),
-    "relu":       lambda b, t, x: b.binary(Op.MAX, t, x, Immediate(0.0, t)),
-    "negative":   lambda b, t, x: b.unary(Op.NEG, t, x),
-    "abs":        lambda b, t, x: b.unary(Op.ABS, t, x),
-    "reciprocal": lambda b, t, x: b.unary(Op.RCP, t, x, mode="rn"),
-    "sqrt":       lambda b, t, x: b.unary(Op.SQRT, t, x, mode="rn"),
-    "exp":        _exp,
-    "copy":       lambda b, t, x: b.mov(t, x),
+    "add":           lambda b, t, x, y: b.add(t, x, y),
+    "subtract":      lambda b, t, x, y: b.binary(Op.SUB, t, x, y),
+    "multiply":      lambda b, t, x, y: b.mul(t, x, y),
+    "divide":        lambda b, t, x, y: b.binary(Op.DIV, t, x, y, mode=None if not t.is_float else "rn"),
+    "maximum":       lambda b, t, x, y: b.binary(Op.MAX, t, x, y),
+    "minimum":       lambda b, t, x, y: b.binary(Op.MIN, t, x, y),
+    "pow":           _pow,
+    "square":        lambda b, t, x: b.mul(t, x, x),
+    "relu":          lambda b, t, x: b.binary(Op.MAX, t, x, _imm(0.0, t)),
+    "negative":      lambda b, t, x: b.unary(Op.NEG, t, x),
+    "abs":           lambda b, t, x: b.unary(Op.ABS, t, x),
+    "reciprocal":    lambda b, t, x: b.unary(Op.RCP, t, x, mode="rn"),
+    "sqrt":          lambda b, t, x: b.unary(Op.SQRT, t, x, mode="rn"),
+    "rsqrt":         lambda b, t, x: b.unary(Op.RCP, t, b.unary(Op.SQRT, t, x, mode="rn"), mode="rn"),
+    "exp":           _exp,
+    "exp_fast":      _exp,
+    "log":           _log,
+    "sigmoid":       _sigmoid,
+    "tanh":          _tanh,
+    "erf":           _erf,
+    "sin":           _sin,
+    "cos":           _cos,
+    "copy":          lambda b, t, x: b.mov(t, x),
+    "pad":           lambda b, t, x: b.mov(t, x),
+    # masks: comparisons and logical combines produce 1 / 0
+    "equal":         _compare(Cmp.EQ),
+    "not_equal":     _compare(Cmp.NE),
+    "less":          _compare(Cmp.LT),
+    "less_equal":    _compare(Cmp.LE),
+    "greater":       _compare(Cmp.GT),
+    "greater_equal": _compare(Cmp.GE),
+    "bitwise_and":   _logical(Op.AND),
+    "bitwise_or":    _logical(Op.OR),
+    "bitwise_not":   lambda b, t, x: _mask(b, t, b.setp(Cmp.EQ, t, x, _imm(0, t))),
+    "where":         lambda b, t, c, x, y: _select(b, t, _truthy(b, t, c), x, y),
 }
 
 
