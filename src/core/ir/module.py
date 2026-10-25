@@ -8,14 +8,14 @@ class Module:
         self.version = version
         self.target = target
         self.address_size = address_size
-        self.shared = []  # (Symbol, align, nbytes)
+        self.shared = []  # (Symbol, align, nbytes); nbytes None = .extern (sized at launch)
         self.functions = []
 
     def add_function(self, function):
         self.functions.append(function)
         return function
 
-    def add_shared(self, name, align, nbytes):
+    def add_shared(self, name, align, nbytes=None):
         sym = Symbol(name)
         self.shared.append((sym, align, nbytes))
         return sym
