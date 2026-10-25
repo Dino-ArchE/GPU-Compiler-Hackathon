@@ -1,4 +1,7 @@
-from .instruction import Binary, Bra, Cvta, Instruction, Load, Mov, Setp, Store, Sync, Unary
+from .instruction import (
+    Binary, Bra, CpAsync, CpAsyncCommit, CpAsyncWait, Cvta, CvtTf32, Instruction, Load, Mma, Mov,
+    Setp, Store, Sync, Unary,
+)
 from .opcode import Op
 from .type_enum import PtxType, StateSpace
 from .value import Address
@@ -54,6 +57,37 @@ class Builder:
 
     def sync(self, barrier_id=0):
         return self.append(Sync(barrier_id))
+
+    # ------------------------------------------------------------------ async copy, tensor cores
+
+    def cp_async(self, dst_addr, src_addr, nbytes, cache="ca"):
+        return self.append(CpAsync(dst_addr, src_addr, nbytes, cache))
+
+    def cp_async_commit(self):
+        return self.append(CpAsyncCommit())
+
+    def cp_async_wait(self, pending=0):
+        return self.append(CpAsyncWait(pending))
+
+    def cvt_tf32(self, x):
+        """f32 -> tf32 bits in a .b32 register (an mma A/B operand)."""
+        dst = self.reg(PtxType.B32)
+        self.append(CvtTf32(dst, x))
+        return dst
+
+    def split_tf32(self, x):
+        """x ~= hi + lo with both tf32 (3xTF32: hi*hi + hi*lo + lo*hi recovers ~f32 accuracy)."""
+        hi = self.cvt_tf32(x)
+        hi_f = self.reg(PtxType.F32)
+        self.append(Mov(PtxType.B32, hi_f, hi))                 # bit-cast back to read it as f32
+        return hi, self.cvt_tf32(self.binary(Op.SUB, PtxType.F32, x, hi_f))
+
+    def mma_tf32(self, a, b, c, d=None):
+        """D = A*B + C for one warp (see Mma for the fragment layout). a: 4 .b32, b: 2 .b32,
+        c: 4 .f32 registers; d defaults to fresh registers. Returns d."""
+        d = list(d) if d is not None else [self.reg(PtxType.F32) for _ in range(4)]
+        self.append(Mma(d, a, b, c))
+        return d
 
     def cvta_to_global(self, src):
         """Generic address (as passed in a param) -> global address for ld/st.global."""

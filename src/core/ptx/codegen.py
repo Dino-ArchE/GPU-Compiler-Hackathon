@@ -80,6 +80,9 @@ class CodeGen(KernelVisitor):
         self.kernel = kernel
         self.module = Module()
         self.function = self.module.add_function(Function(kernel.name, [a.name for a in kernel.args]))
+        # facts the optimizer may specialize on: the launch is fixed and inputs are never written
+        self.function.launch_grid, self.function.launch_block = kernel.grid, kernel.block
+        self.function.readonly = {self.function.param(a.name) for a in kernel.args if not a.is_output}
         self.builder = Builder(self.function)
         self.sym_table = SymbolTable()
         self.accum_ready = set()   # ids of Accum nodes whose identity init is already emitted
@@ -310,15 +313,14 @@ class CodeGen(KernelVisitor):
         src = self.address(self.sym_table.buffer(copy.src), copy.src_index)
         # .cg (L2 only) exists for 16-byte copies; smaller ones must use .ca
         level = "cg" if copy.nbytes == 16 else "ca"
-        nbytes = Immediate(copy.nbytes, PtxType.U32)
-        self.builder.append(Instruction(Op.CP, ("async", level, "shared", "global"), srcs=[dst, src, nbytes]))
+        self.builder.cp_async(dst, src, copy.nbytes, cache=level)
 
     def visit_CpAsyncCommit(self, commit):
-        self.builder.append(Instruction(Op.CP, ("async", "commit_group")))
+        self.builder.cp_async_commit()
 
     def visit_CpAsyncWait(self, wait):
         """Wait until at most `group` committed copy groups are still in flight."""
-        self.builder.append(Instruction(Op.CP, ("async", "wait_group"), srcs=[Immediate(wait.group, PtxType.U32)]))
+        self.builder.cp_async_wait(wait.group)
 
     def init_accumulators(self, loop):
         """Accum identity goes before the loop its `axes` names, not at the Accum statement:

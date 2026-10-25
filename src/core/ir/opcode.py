@@ -50,6 +50,8 @@ class Op(StrEnum):
     BAR = "bar"
     SHFL = "shfl"
     ACTIVEMASK = "activemask"
+    # tensor cores
+    MMA = "mma"
     # atomics
     RED = "red"
     ATOM = "atom"
