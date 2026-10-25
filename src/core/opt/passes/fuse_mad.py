@@ -1,4 +1,4 @@
-from core.ir import Instruction, Op, PtxType, Register
+from core.ir import Instruction, Op, Register
 
 from ..pass_manager import CFG_ANALYSES, FunctionPass, register_pass
 
@@ -9,8 +9,11 @@ class FuseMultiplyAdd(FunctionPass):
     """add(mul(a, b), c) -> one multiply-add, when the mul result has no other reader.
 
         mul.lo.s32 t, a, b;   add.s32 d, t, c   ->  mad.lo.s32 d, a, b, c
-        mul.wide.s32 t, a, k; add.s64 d, t, c   ->  mad.wide.s32 d, a, k, c   (address math)
         mul.f32 t, a, b;      add.f32 d, t, c   ->  fma.rn.f32 d, a, b, c
+
+    Address math (mul.wide.s32 + add.s64) is left separate on purpose: fused into mad.wide it
+    made a01 attention 3.8x slower on the runner (385 vs 103 us; 54 vs 128 registers, so ptxas
+    compiles the loops very differently). ptxas fuses the pair itself where it pays.
 
     Integer fusion is exact. For f32 it is the contraction ptxas applies anyway to a mul/add
     pair without a rounding modifier (an explicit .rn on either forbids it, so those stay).
@@ -53,8 +56,6 @@ class FuseMultiplyAdd(FunctionPass):
             mt = mul.ptx_type
             if mul.types == ("lo", mt) and mt == at:
                 return Instruction(Op.MAD, ("lo", at), [add.dsts[0]], [a, b, c])
-            if mul.types == ("wide", mt) and at in (PtxType.S64, PtxType.U64) and mt in (PtxType.S32, PtxType.U32):
-                return Instruction(Op.MAD, ("wide", mt), [add.dsts[0]], [a, b, c])
         return None
 
 

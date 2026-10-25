@@ -33,8 +33,8 @@ ARGS = ({"x": X}, {"out": np.zeros(64, np.float32)})
 
 def test_fuses_int_wide_and_float():
     o = ops(differential(build(), PIPE, *ARGS))
-    assert "mad.lo.s32" in o and o.count("mad.wide.s32") == 2 and "fma.rn.f32" in o
-    assert "mul.f32" not in o and "add.s64" not in o
+    assert "mad.lo.s32" in o and "fma.rn.f32" in o and "mul.f32" not in o
+    assert "mad.wide.s32" not in o            # address math stays mul.wide + add.s64 for ptxas
 
 
 def test_shared_mul_or_explicit_rounding_not_fused():
