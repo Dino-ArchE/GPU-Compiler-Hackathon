@@ -119,7 +119,7 @@ class CodeGen:
         for arg in self.kernel.args:
             generic = self.builder.load_param(self.function.param(arg.name))
             base = self.builder.cvta_to_global(generic)
-            buffer = Buffer(StateSpace.GLOBAL, base, arg.shape, PtxType.from_meta(arg.dtype))
+            buffer = Buffer(StateSpace.GLOBAL, base, arg.shape, PtxType.from_dtype(arg.dtype))
             self.sym_table.define_buffer(arg.name, buffer)
 
     # ------------------------------------------------------------------ statements
@@ -239,7 +239,7 @@ class CodeGen:
     def assign(self, assign, dtype):
         """Shared by Assign and combine_states, whose Assigns carry dtype=None (use the state's)."""
         args = [self.operand(arg) for arg in assign.args]
-        ptx_type = PtxType.from_meta(assign.dtype or dtype)
+        ptx_type = PtxType.from_dtype(assign.dtype or dtype)
         result = lower_elementwise(self.builder, assign.op.name, ptx_type, args)
         self.sym_table.define_scalar(assign.name, result)
 
@@ -302,13 +302,13 @@ class CodeGen:
     def visit_Init(self, init):
         """f32 name = identity, set once where it stands (matmul accumulators, which must
         survive the outer k loop although their Accum names only the inner one)."""
-        ptx_type = PtxType.from_meta(init.dtype)
+        ptx_type = PtxType.from_dtype(init.dtype)
         self.sym_table.define_scalar(init.name, self.builder.mov(ptx_type, Immediate(init.identity, ptx_type)))
         self.explicit_init.add(init.name)
 
     def visit_Let(self, let):
         """f32 name = value: a named constant (or expression)."""
-        ptx_type = PtxType.from_meta(let.dtype)
+        ptx_type = PtxType.from_dtype(let.dtype)
         value = Immediate(let.value.value, ptx_type) if type(let.value).__name__ == "Literal" else self.visit(let.value)
         self.sym_table.define_scalar(let.name, self.builder.mov(ptx_type, value))
 
@@ -344,7 +344,7 @@ class CodeGen:
                 self.init_accumulator(stmt)
 
     def init_accumulator(self, accum):
-        ptx_type = PtxType.from_meta(accum.dtype)
+        ptx_type = PtxType.from_dtype(accum.dtype)
         acc = self.builder.mov(ptx_type, Immediate(accum.op.identity, ptx_type))
         self.sym_table.define_scalar(accum.name, acc)
 
@@ -355,7 +355,7 @@ class CodeGen:
             self.init_accumulator(accum)    # no enclosing loop named it
         first = accum.base if accum.base is not None else accum.name
         args = [self.operand(first), self.operand(accum.value)]
-        ptx_type = PtxType.from_meta(accum.dtype)
+        ptx_type = PtxType.from_dtype(accum.dtype)
         self.sym_table.define_scalar(accum.name, lower_elementwise(self.builder, accum.op.name, ptx_type, args))
 
     def visit_WarpShuffle(self, shuffle):

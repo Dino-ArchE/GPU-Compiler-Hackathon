@@ -33,7 +33,7 @@ class PtxType(StrEnum):
         return self.value.startswith("f")
 
     @classmethod
-    def from_meta(cls, dtype):
+    def from_dtype(cls, dtype):
         """meta.json / runner dtype -> PtxType. Their ints are i32/i64; PTX spells signed ints s32/s64.
         A bool value (a comparison result) lives in a predicate register.
 

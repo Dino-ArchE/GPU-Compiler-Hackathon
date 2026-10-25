@@ -52,7 +52,7 @@ src/core/frontend/           KernelInfo: name, params (arg_order), buffer shapes
 src/core/ir/                 our IR, data only (+ IRBuilder):
     value.py                 Value base; Immediate, Symbol, Address [base+off], Vector {..}
     reg.py                   Register(Value) hierarchy, RegisterFile allocator
-    type_enum.py             PtxType (f32, u64, s32, ...; nbytes, is_float, from_meta), StateSpace
+    type_enum.py             PtxType (f32, u64, s32, ...; nbytes, is_float, from_dtype), StateSpace
     opcode.py                Op enum (ld, st, mov, add, setp, bra, ...)
     instruction.py           Instruction(op, types, dsts, srcs, guard, negate, comment); defs/uses.
                              Subclasses (Load, Store, Mov, Sync) are typed constructors that fill
@@ -100,7 +100,7 @@ is not a kill. Special registers can only feed `mov`. Each new pass gets a unit 
 `differential()`, then `tools/check_opt.sh` + `tools/run_runner.sh`, then its own commit.
 
 Rules: every operand is a `Value` (never a raw str/int). Opcodes, types and state spaces use the
-enums (`Op`, `PtxType`, `StateSpace`); meta.json dtype strings and Kernel IR DataTypes both go through `PtxType.from_meta` (i32 -> s32; pass the object, not `.name`). Instruction is not a Value: PTX registers
+enums (`Op`, `PtxType`, `StateSpace`); meta.json dtype strings and Kernel IR DataTypes both go through `PtxType.from_dtype` (i32 -> s32; pass the object, not `.name`). Instruction is not a Value: PTX registers
 are not SSA (accumulators update in place). Block layout order = `set_block` order, and fall-through
 goes to the next block. The visitor emits `ret` itself.
 Printing: `str()` is the PTX text at every level: a Value its operand spelling, an Instruction
