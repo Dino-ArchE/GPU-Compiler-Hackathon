@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from core.ir import CTAID_X, NTID_X, TID_X, Address, Immediate, Op, PtxType, StateSpace
+from core.ir import CTAID_X, NTID_X, TID_X, Address, Immediate, Mod, Op, PtxType, StateSpace
 
 from helpers import differential, finish, new_function, ops
 
@@ -28,11 +28,11 @@ def fl(c):
 
 
 def sqrt(b, v):
-    return b.unary(Op.SQRT, F, v, mode="rn")
+    return b.unary(Op.SQRT, F, v, mode=Mod.RN)
 
 
 def div(b, a, y):
-    return b.binary(Op.DIV, F, a, y, mode="rn")
+    return b.binary(Op.DIV, F, a, y, mode=Mod.RN)
 
 
 X = np.random.default_rng(7).uniform(0.5, 4.0, 64).astype(np.float32)
@@ -41,12 +41,12 @@ ARGS = ({"x": X}, {"out": np.zeros(64, np.float32)})
 
 @pytest.mark.parametrize("body, want, gone", [
     (lambda b, v: div(b, v, sqrt(b, v)), ["rsqrt.approx.f32", "mul.f32"], ["sqrt.rn.f32", "div.rn.f32"]),
-    (lambda b, v: b.unary(Op.RCP, F, sqrt(b, b.add(F, v, fl(1.0))), mode="rn"),
+    (lambda b, v: b.unary(Op.RCP, F, sqrt(b, b.add(F, v, fl(1.0))), mode=Mod.RN),
      ["rsqrt.approx.f32"], ["rcp.rn.f32", "sqrt.rn.f32"]),
     (lambda b, v: div(b, v, fl(3.0)), ["mul.f32"], ["div.rn.f32"]),
     (lambda b, v: div(b, fl(1.0), v), ["rcp.approx.f32"], ["div.rn.f32"]),
     (lambda b, v: div(b, fl(2.0), v), ["div.full.f32"], ["div.rn.f32"]),
-    (lambda b, v: b.unary(Op.RCP, F, v, mode="rn"), ["rcp.approx.f32"], ["rcp.rn.f32"]),
+    (lambda b, v: b.unary(Op.RCP, F, v, mode=Mod.RN), ["rcp.approx.f32"], ["rcp.rn.f32"]),
     (lambda b, v: sqrt(b, v), ["sqrt.approx.f32"], ["sqrt.rn.f32"]),
 ])
 def test_rewrites(body, want, gone):

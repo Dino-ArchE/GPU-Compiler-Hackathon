@@ -1,6 +1,6 @@
 import math
 
-from core.ir import Immediate, Instruction, Op, PtxType, Register
+from core.ir import Immediate, Instruction, Mod, Op, PtxType, Register
 
 from ..analysis.ranges import is_int, wrap
 from ..fold import result_type
@@ -71,7 +71,7 @@ class InstCombine(FunctionPass):
             return None
         if is_int(t):
             return self.simplify_int(inst, t)
-        if t in (PtxType.F32, PtxType.F64) and not ({"ftz", "sat", "approx"} & set(inst.types)):
+        if t in (PtxType.F32, PtxType.F64) and not ({Mod.FTZ, Mod.SAT, Mod.APPROX} & set(inst.types)):
             return self.simplify_float(inst, t)
         return None
 
@@ -80,13 +80,13 @@ class InstCombine(FunctionPass):
         rt = result_type(inst)
         mods = inst.types
         b = _ival(s[1], t) if len(s) > 1 else None
-        if op is Op.MAD and "hi" not in mods:
+        if op is Op.MAD and Mod.HI not in mods:
             c = s[2]
             if b == 0:
                 return _mov(d, rt, c)
             if _ival(c, rt) == 0:
                 return Instruction(Op.MUL, mods, [d], s[:2])
-            if b == 1 and "lo" in mods:
+            if b == 1 and Mod.LO in mods:
                 return Instruction(Op.ADD, (t,), [d], [s[0], c])
             return None
         if len(s) != 2:
@@ -94,7 +94,7 @@ class InstCombine(FunctionPass):
         x = s[0]
         if b == 0 and op in (Op.ADD, Op.OR, Op.XOR, Op.SHL, Op.SHR):
             return _mov(d, t, x)
-        if b == 1 and (op is Op.DIV or op is Op.MUL and "lo" in mods):
+        if b == 1 and (op is Op.DIV or op is Op.MUL and Mod.LO in mods):
             return _mov(d, t, x)
         if op is Op.AND and b == wrap(-1, t):
             return _mov(d, t, x)
@@ -144,7 +144,7 @@ class InstCombine(FunctionPass):
             return None
         if op is Op.ADD:
             c = wrap(c1 + c2, t)
-        elif op is Op.MUL and "lo" in inst.types:
+        elif op is Op.MUL and Mod.LO in inst.types:
             c = wrap(c1 * c2, t)
         elif op is Op.SHL and c1 + c2 < int(t.value[1:]):
             c = c1 + c2
@@ -164,10 +164,10 @@ class InstCombine(FunctionPass):
             return Instruction(Op.NEG, (t,), [d], [x])
         if op is Op.ADD and neg_zero or op is Op.SUB and c == 0.0 and not neg_zero:
             return _mov(d, t, x)
-        if op is Op.DIV and "rn" in inst.types and c != 0.0:
+        if op is Op.DIV and Mod.RN in inst.types and c != 0.0:
             m, e = math.frexp(abs(c))
             if m == 0.5 and -125 <= 1 - e <= 127:          # c = +-2^(e-1); 1/c is a normal f32
-                return Instruction(Op.MUL, ("rn", t), [d], [x, Immediate(1.0 / c, t)])
+                return Instruction(Op.MUL, (Mod.RN, t), [d], [x, Immediate(1.0 / c, t)])
         return None
 
 

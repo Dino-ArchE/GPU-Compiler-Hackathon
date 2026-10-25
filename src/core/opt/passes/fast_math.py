@@ -1,6 +1,6 @@
 import math
 
-from core.ir import Immediate, Instruction, Op, PtxType, Register
+from core.ir import Immediate, Instruction, Mod, Op, PtxType, Register
 
 from ..fold import round_f32
 from ..pass_manager import CFG_ANALYSES, FunctionPass, register_pass
@@ -34,7 +34,7 @@ class FastMath(FunctionPass):
         for block in function.blocks:
             for k, inst in enumerate(block.instructions):
                 if inst.op not in (Op.DIV, Op.RCP, Op.SQRT) or inst.ptx_type is not F32 \
-                        or "rn" not in inst.types:
+                        or Mod.RN not in inst.types:
                     continue
                 new = self.rewrite(inst, du)
                 if new is inst:
@@ -48,25 +48,25 @@ class FastMath(FunctionPass):
     def rewrite(self, inst, du):
         d, s = inst.dsts[0], inst.srcs
         if inst.op is Op.SQRT:
-            inst.types = ("approx", F32)   # in place: a later div/rcp may still turn it into rsqrt
+            inst.types = (Mod.APPROX, F32)   # in place: a later div/rcp may still turn it into rsqrt
             return inst
         y = s[-1]
         sq = self.sole_sqrt(y, inst, du)
         if sq is not None:
             # the sqrt feeds only this instruction: turn it into rsqrt in place
-            sq.op, sq.types = Op.RSQRT, ("approx", F32)
+            sq.op, sq.types = Op.RSQRT, (Mod.APPROX, F32)
             if inst.op is Op.RCP:
                 return Instruction(Op.MOV, (F32,), [d], [y])
             return Instruction(Op.MUL, (F32,), [d], [s[0], y])
         if inst.op is Op.RCP:
-            return Instruction(Op.RCP, ("approx", F32), [d], s)
+            return Instruction(Op.RCP, (Mod.APPROX, F32), [d], s)
         a = s[0]
         r = _reciprocal(float(y.value)) if isinstance(y, Immediate) else None
         if r is not None:
             return Instruction(Op.MUL, (F32,), [d], [a, Immediate(r, F32)])
         if isinstance(a, Immediate) and float(a.value) == 1.0:
-            return Instruction(Op.RCP, ("approx", F32), [d], [y])
-        return Instruction(Op.DIV, ("full", F32), [d], s)
+            return Instruction(Op.RCP, (Mod.APPROX, F32), [d], [y])
+        return Instruction(Op.DIV, (Mod.FULL, F32), [d], s)
 
     @staticmethod
     def sole_sqrt(y, inst, du):

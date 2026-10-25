@@ -16,7 +16,7 @@ for rtol 1e-4, so tanh and erf are formulas over exp.
 
 import math
 
-from core.ir import Cmp, Immediate, Instruction, Op, PtxType, Register
+from core.ir import Cmp, Immediate, Instruction, Mod, Op, PtxType, Register
 
 LOG2E = math.log2(math.e)
 LN2 = math.log(2.0)
@@ -72,30 +72,30 @@ def _result(b, t, pred):
 
 def _exp(b, t, x):
     # PTX has only 2^x: e^x = 2^(x * log2(e))
-    return b.unary(Op.EX2, t, b.mul(t, x, _imm(LOG2E, t)), mode="approx")
+    return b.unary(Op.EX2, t, b.mul(t, x, _imm(LOG2E, t)), mode=Mod.APPROX)
 
 
 def _log(b, t, x):
     # ln x = log2(x) * ln(2)
-    return b.mul(t, b.unary(Op.LG2, t, x, mode="approx"), _imm(LN2, t))
+    return b.mul(t, b.unary(Op.LG2, t, x, mode=Mod.APPROX), _imm(LN2, t))
 
 
 def _sigmoid(b, t, x):
     # 1 / (1 + e^-x): e^-x overflows to inf for very negative x, giving 0 as it should
     denom = b.add(t, _exp(b, t, b.unary(Op.NEG, t, x)), _imm(1.0, t))
-    return b.unary(Op.RCP, t, denom, mode="rn")
+    return b.unary(Op.RCP, t, denom, mode=Mod.RN)
 
 
 def _tanh(b, t, x):
     # tanh x = 1 - 2 / (e^(2x) + 1): saturates cleanly to +-1 at both ends
     e2x = _exp(b, t, b.mul(t, x, _imm(2.0, t)))
-    frac = b.binary(Op.DIV, t, _imm(2.0, t), b.add(t, e2x, _imm(1.0, t)), mode="rn")
+    frac = b.binary(Op.DIV, t, _imm(2.0, t), b.add(t, e2x, _imm(1.0, t)), mode=Mod.RN)
     return b.binary(Op.SUB, t, _imm(1.0, t), frac)
 
 
 def _erf(b, t, x):
     ax = b.unary(Op.ABS, t, x)
-    tt = b.unary(Op.RCP, t, b.mad(t, ax, _imm(ERF_P, t), _imm(1.0, t)), mode="rn")
+    tt = b.unary(Op.RCP, t, b.mad(t, ax, _imm(ERF_P, t), _imm(1.0, t)), mode=Mod.RN)
     poly = _imm(ERF_A[-1], t)
     for a in reversed(ERF_A[:-1]):          # Horner: ((a5 t + a4) t + a3) t ...
         poly = b.mad(t, poly, tt, _imm(a, t))
@@ -107,25 +107,25 @@ def _erf(b, t, x):
 
 def _reduce_angle(b, t, x):
     """x - 2pi * round(x / 2pi): sin/cos.approx are only accurate on [-pi, pi]."""
-    k = b.cvt(t, t, b.mul(t, x, _imm(1.0 / TWO_PI, t)), mode="rni")
+    k = b.cvt(t, t, b.mul(t, x, _imm(1.0 / TWO_PI, t)), mode=Mod.RNI)
     return b.mad(t, b.unary(Op.NEG, t, k), _imm(TWO_PI, t), x)
 
 
 def _sin(b, t, x):
-    return b.unary(Op.SIN, t, _reduce_angle(b, t, x), mode="approx")
+    return b.unary(Op.SIN, t, _reduce_angle(b, t, x), mode=Mod.APPROX)
 
 
 def _cos(b, t, x):
-    return b.unary(Op.COS, t, _reduce_angle(b, t, x), mode="approx")
+    return b.unary(Op.COS, t, _reduce_angle(b, t, x), mode=Mod.APPROX)
 
 
 def _pow(b, t, x, y):
     """x^y = 2^(y log2 |x|), with C powf's rules for the cases that formula gets wrong:
     a negative base is valid only for an integer y (negated when y is odd), and y == 0 -> 1."""
-    r = b.unary(Op.EX2, t, b.mul(t, y, b.unary(Op.LG2, t, b.unary(Op.ABS, t, x), mode="approx")), mode="approx")
-    yi = b.cvt(t, t, y, mode="rni")
+    r = b.unary(Op.EX2, t, b.mul(t, y, b.unary(Op.LG2, t, b.unary(Op.ABS, t, x), mode=Mod.APPROX)), mode=Mod.APPROX)
+    yi = b.cvt(t, t, y, mode=Mod.RNI)
     integral = b.setp(Cmp.EQ, t, y, yi)
-    half = b.cvt(t, t, b.mul(t, yi, _imm(0.5, t)), mode="rmi")      # floor(y / 2)
+    half = b.cvt(t, t, b.mul(t, yi, _imm(0.5, t)), mode=Mod.RMI)      # floor(y / 2)
     odd = b.setp(Cmp.NE, t, b.mul(t, half, _imm(2.0, t)), yi)
     negative = b.setp(Cmp.LT, t, x, _imm(0.0, t))
     r = _select(b, t, b.binary(Op.AND, PtxType.PRED, negative, odd), b.unary(Op.NEG, t, r), r)
@@ -147,7 +147,7 @@ ELEMENTWISE = {
     "add":           lambda b, t, x, y: b.add(t, x, y),
     "subtract":      lambda b, t, x, y: b.binary(Op.SUB, t, x, y),
     "multiply":      lambda b, t, x, y: b.mul(t, x, y),
-    "divide":        lambda b, t, x, y: b.binary(Op.DIV, t, x, y, mode=None if not t.is_float else "rn"),
+    "divide":        lambda b, t, x, y: b.binary(Op.DIV, t, x, y, mode=None if not t.is_float else Mod.RN),
     "maximum":       lambda b, t, x, y: b.binary(Op.MAX, t, x, y),
     "minimum":       lambda b, t, x, y: b.binary(Op.MIN, t, x, y),
     "pow":           _pow,
@@ -155,9 +155,9 @@ ELEMENTWISE = {
     "relu":          lambda b, t, x: b.binary(Op.MAX, t, x, _imm(0.0, t)),
     "negative":      lambda b, t, x: b.unary(Op.NEG, t, x),
     "abs":           lambda b, t, x: b.unary(Op.ABS, t, x),
-    "reciprocal":    lambda b, t, x: b.unary(Op.RCP, t, x, mode="rn"),
-    "sqrt":          lambda b, t, x: b.unary(Op.SQRT, t, x, mode="rn"),
-    "rsqrt":         lambda b, t, x: b.unary(Op.RCP, t, b.unary(Op.SQRT, t, x, mode="rn"), mode="rn"),
+    "reciprocal":    lambda b, t, x: b.unary(Op.RCP, t, x, mode=Mod.RN),
+    "sqrt":          lambda b, t, x: b.unary(Op.SQRT, t, x, mode=Mod.RN),
+    "rsqrt":         lambda b, t, x: b.unary(Op.RCP, t, b.unary(Op.SQRT, t, x, mode=Mod.RN), mode=Mod.RN),
     "exp":           _exp,
     "exp_fast":      _exp,
     "log":           _log,

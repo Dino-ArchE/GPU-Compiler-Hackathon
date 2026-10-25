@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from core.ir import CTAID_X, NTID_X, TID_X, Address, Immediate, Instruction, Op, PtxType, StateSpace
+from core.ir import CTAID_X, NTID_X, TID_X, Address, Immediate, Instruction, Mod, Op, PtxType, StateSpace
 
 from core.opt import Repeat
 from helpers import differential, finish, new_function, ops, run
@@ -68,7 +68,7 @@ def test_mad_by_zero_is_its_addend():
 def test_reassociation_collapses_chain():
     f = check(lambda b, g, v: b.mul(S, b.mul(S, v, i(3)), i(5)))
     assert ops(f).count("mul.lo.s32") == 1
-    mul = next(x for _, x in f.instructions() if x.op is Op.MUL and "lo" in x.types)
+    mul = next(x for _, x in f.instructions() if x.op is Op.MUL and Mod.LO in x.types)
     assert mul.srcs[1].value == 15
 
 
@@ -77,8 +77,8 @@ def test_reassociation_collapses_chain():
     (lambda b, g, v: b.add(F, v, fl(-0.0)), ["add.f32"]),
     (lambda b, g, v: b.binary(Op.SUB, F, v, fl(0.0)), ["sub.f32"]),
     (lambda b, g, v: b.mul(F, v, fl(-1.0)), ["mul.f32"]),
-    (lambda b, g, v: b.binary(Op.DIV, F, v, fl(4.0), mode="rn"), ["div.rn.f32"]),
-    (lambda b, g, v: b.binary(Op.DIV, F, v, fl(0.125), mode="rn"), ["div.rn.f32"]),
+    (lambda b, g, v: b.binary(Op.DIV, F, v, fl(4.0), mode=Mod.RN), ["div.rn.f32"]),
+    (lambda b, g, v: b.binary(Op.DIV, F, v, fl(0.125), mode=Mod.RN), ["div.rn.f32"]),
 ])
 def test_float_identities_are_bit_exact(body, gone):
     check(body, F, gone)
@@ -91,7 +91,7 @@ def test_float_add_zero_kept():
 
 
 def test_div_by_non_power_of_two_kept():
-    f = check(lambda b, g, v: b.binary(Op.DIV, F, v, fl(3.0), mode="rn"), F)
+    f = check(lambda b, g, v: b.binary(Op.DIV, F, v, fl(3.0), mode=Mod.RN), F)
     assert "div.rn.f32" in ops(f)
 
 

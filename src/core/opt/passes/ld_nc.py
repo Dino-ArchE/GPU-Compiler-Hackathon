@@ -1,4 +1,4 @@
-from core.ir import Op, StateSpace
+from core.ir import Mod, Op, StateSpace
 
 from ..pass_manager import PRESERVE_ALL, FunctionPass, register_pass
 
@@ -19,9 +19,9 @@ class LoadNonCoherent(FunctionPass):
         mem = am.get("memory")
         changed = False
         for _, inst in function.instructions():
-            if inst.op is Op.LD and inst.space is StateSpace.GLOBAL and "nc" not in inst.types \
+            if inst.op is Op.LD and inst.space is StateSpace.GLOBAL and Mod.NC not in inst.types \
                     and mem.is_invariant_load(inst):
                 k = inst.types.index(StateSpace.GLOBAL)
-                inst.types = (*inst.types[:k + 1], "nc", *inst.types[k + 1:])
+                inst.types = (*inst.types[:k + 1], Mod.NC, *inst.types[k + 1:])
                 changed = True
         return changed

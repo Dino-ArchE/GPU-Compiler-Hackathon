@@ -15,7 +15,7 @@ arithmetic keeps divisibility by powers of two). Lets passes prove `x >= 0` (sig
 shifts and masks) and `addr % 16 == 0` (vector loads).
 """
 
-from core.ir import CTAID_X, LANEID, NTID_X, TID_X, Address, Immediate, Op, Param, PtxType, Register, StateSpace
+from core.ir import CTAID_X, LANEID, NTID_X, TID_X, Address, Immediate, Mod, Op, Param, PtxType, Register, StateSpace
 
 from ..pass_manager import Analysis, register_analysis
 
@@ -179,7 +179,7 @@ class ValueRanges:
         if not is_int(t):
             return None
 
-        wide = "wide" in mods
+        wide = Mod.WIDE in mods
         rt = WIDE[t] if wide else t                     # result type
         s = [self.get(v, t) if not isinstance(v, Address) else top(t) for v in inst.srcs]
 
@@ -191,10 +191,10 @@ class ValueRanges:
         elif op is Op.SUB:
             a, b = s
             r = Range(a.lo - b.hi, a.hi - b.lo, min(a.align, b.align))
-        elif op is Op.MUL and "hi" not in mods:
+        elif op is Op.MUL and Mod.HI not in mods:
             a, b = s
             r = Range(*_corners(a, b, lambda x, y: x * y), a.align * b.align)
-        elif op is Op.MAD and "hi" not in mods:
+        elif op is Op.MAD and Mod.HI not in mods:
             a, b = s[:2]
             c = self.get(inst.srcs[2], rt)
             lo, hi = _corners(a, b, lambda x, y: x * y)

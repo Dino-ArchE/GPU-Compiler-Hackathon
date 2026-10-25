@@ -1,6 +1,6 @@
 import numpy as np
 
-from core.ir import TID_X, Address, Cmp, Immediate, Op, PtxType, StateSpace
+from core.ir import TID_X, Address, Cmp, Immediate, Mod, Op, PtxType, StateSpace
 
 from helpers import differential, finish, new_function, ops, run
 from core.opt.fold import evaluate, round_f32
@@ -15,14 +15,14 @@ def test_evaluate_matches_hardware_rules():
     assert ev(Op.DIV, S, -7, 2) == -3 and ev(Op.REM, S, -7, 2) == -1      # C truncation
     assert ev(Op.ADD, S, 2**31 - 1, 1) == -2**31                          # wraps
     assert ev(Op.SHR, S, -8, 1) == -4 and ev(Op.SHR, U, 2**32 - 8, 1) == 2**31 - 4
-    assert ev(Op.MUL, S, 3, 5, mode="wide") == 15
-    assert ev(Op.MUL, U, 2**31, 4, mode="hi") == 2
+    assert ev(Op.MUL, S, 3, 5, mode=Mod.WIDE) == 15
+    assert ev(Op.MUL, U, 2**31, 4, mode=Mod.HI) == 2
     assert ev(Op.DIV, S, 1, 0) is None
     assert ev(Op.ADD, F, 0.1, 0.2) == round_f32(round_f32(0.1) + round_f32(0.2))
     assert ev(Op.DIV, F, 1.0, 3.0) is None                    # div without .rn is approximate
-    assert ev(Op.DIV, F, 1.0, 3.0, mode="rn") == round_f32(1 / 3)
+    assert ev(Op.DIV, F, 1.0, 3.0, mode=Mod.RN) == round_f32(1 / 3)
     assert ev(Op.MUL, F, 3e38, 10.0) == float("inf")
-    mad = Instruction(Op.MAD, ("lo", S), dsts=[None], srcs=[None] * 3)
+    mad = Instruction(Op.MAD, (Mod.LO, S), dsts=[None], srcs=[None] * 3)
     assert evaluate(mad, [3, 4, 5]) == 17
 
 

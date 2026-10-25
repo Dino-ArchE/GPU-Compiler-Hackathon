@@ -1,7 +1,7 @@
 import pytest
 
 from core.ir import (
-    CTAID_X, NTID_X, TID_X, Address, Cmp, Immediate, Instruction, Load, Op, PtxType, StateSpace, Vector,
+    CTAID_X, NTID_X, TID_X, Address, Cmp, Immediate, Instruction, Load, Mod, Op, PtxType, StateSpace, Vector,
 )
 from core.opt import PASSES, ANALYSES, PassManager, Repeat, VerifyError, verify
 from core.opt.pass_manager import FunctionPass
@@ -102,7 +102,7 @@ def test_ranges_use_launch():
     gid = next(i for _, i in f.instructions() if i.op is Op.MAD).dsts[0]
     r = rng.get(gid, PtxType.S32)
     assert (r.lo, r.hi) == (0, 4 * 256 - 1)
-    off = next(i for _, i in f.instructions() if "wide" in i.types).dsts[0]
+    off = next(i for _, i in f.instructions() if Mod.WIDE in i.types).dsts[0]
     assert rng.get(off, PtxType.S64).align == 4
     assert rng.constant(NTID_X, PtxType.U32) == 256
 
@@ -111,7 +111,7 @@ def test_replace_use_reaches_addresses_and_vectors():
     f, b = new_function()
     r0, r1, r2 = b.reg(PtxType.U64), b.reg(PtxType.U64), b.reg(PtxType.F32)
     ld = Load(StateSpace.GLOBAL, PtxType.F32, Vector([r2, b.reg(PtxType.F32)]), Address(r0, 8))
-    st = Instruction(Op.ST, (StateSpace.GLOBAL, "v2", PtxType.F32), srcs=[Address(r0), Vector([r2, r2])])
+    st = Instruction(Op.ST, (StateSpace.GLOBAL, Mod.V2, PtxType.F32), srcs=[Address(r0), Vector([r2, r2])])
     assert ld.replace_use(r0, r1) == 1 and ld.srcs[0].base is r1 and ld.srcs[0].offset == 8
     assert st.replace_use(r2, Immediate(1.0, PtxType.F32)) == 1
     assert st.replace_use(r0, Immediate(0, PtxType.U64)) == 0     # no immediate address base

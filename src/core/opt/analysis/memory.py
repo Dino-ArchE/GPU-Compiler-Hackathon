@@ -9,7 +9,7 @@ returns the same value every time, so CSE may merge such loads and ld-nc may rou
 through the read-only cache.
 """
 
-from core.ir import Address, Op, Param, PtxType, Register, StateSpace, Symbol
+from core.ir import Address, Mod, Op, Param, PtxType, Register, StateSpace, Symbol
 
 from ..pass_manager import Analysis, register_analysis
 
@@ -56,7 +56,7 @@ class PointerInfo:
         if inst.op in POINTER_ARITH and inst.ptx_type in (PtxType.S64, PtxType.U64, PtxType.B64):
             roots = [r for r in (self.root(v) for v in inst.srcs) if r is not None]
             return roots[0] if len(roots) == 1 else None
-        if inst.op is Op.MAD and "wide" in inst.types:
+        if inst.op is Op.MAD and Mod.WIDE in inst.types:
             return self.root(inst.srcs[2])
         return None
 

@@ -5,7 +5,7 @@ cp.async + commit/wait. Each kernel is checked against numpy in the interpreter,
 import numpy as np
 import pytest
 
-from core.ir import TID_X, Address, Immediate, Module, Op, PtxType, StateSpace
+from core.ir import TID_X, Address, Immediate, Mod, Module, Op, PtxType, StateSpace
 
 from core.opt import build_pipeline
 from helpers import differential, finish, new_function, ops
@@ -93,7 +93,7 @@ def build_cp_async():
         tid = b.mov(U, TID_X)
         off = b.mul_wide(tid, Immediate(16, S))
         dst = b.add(PtxType.S64, b.mov(PtxType.U64, smem), off)
-        b.cp_async(Address(dst), Address(b.add(PtxType.S64, x, off)), 16, cache="cg")
+        b.cp_async(Address(dst), Address(b.add(PtxType.S64, x, off)), 16, cache=Mod.CG)
         b.cp_async_commit()
         b.cp_async_wait(0)
         b.sync()

@@ -53,7 +53,7 @@ src/core/ir/                 our IR, data only (+ IRBuilder):
     value.py                 Value base; Immediate, Symbol, Address [base+off], Vector {..}
     reg.py                   Register(Value) hierarchy, RegisterFile allocator
     type_enum.py             PtxType (f32, u64, s32, ...; nbytes, is_float, from_dtype), StateSpace
-    opcode.py                Op enum (ld, st, mov, add, setp, bra, ...)
+    opcode.py                Op (ld, st, add, ...), Cmp (setp eq/lt/...), Mod (rn, lo, wide, approx, v4, ...)
     instruction.py           Instruction(op, types, dsts, srcs, guard, negate, comment); defs/uses.
                              Subclasses (Load, Store, Mov, Sync) are typed constructors that fill
                              the same fields; they never override __str__. Tensor cores (sm_89
@@ -99,8 +99,9 @@ whose `defuse.single_def` exists (one unguarded def); accumulators are left alon
 is not a kill. Special registers can only feed `mov`. Each new pass gets a unit test through
 `differential()`, then `tools/check_opt.sh` + `tools/run_runner.sh`, then its own commit.
 
-Rules: every operand is a `Value` (never a raw str/int). Opcodes, types and state spaces use the
-enums (`Op`, `PtxType`, `StateSpace`); meta.json dtype strings and Kernel IR DataTypes both go through `PtxType.from_dtype` (i32 -> s32; pass the object, not `.name`). Instruction is not a Value: PTX registers
+Rules: every operand is a `Value` (never a raw str/int). Opcodes, types, state spaces, comparisons and
+modifiers use the enums (`Op`, `PtxType`, `StateSpace`, `Cmp`, `Mod`: `Mod.RN`, never `"rn"`;
+`Instruction.types` raises TypeError on a bare str); meta.json dtype strings and Kernel IR DataTypes both go through `PtxType.from_dtype` (i32 -> s32; pass the object, not `.name`). Instruction is not a Value: PTX registers
 are not SSA (accumulators update in place). Block layout order = `set_block` order, and fall-through
 goes to the next block. The visitor emits `ret` itself.
 Printing: `str()` is the PTX text at every level: a Value its operand spelling, an Instruction

@@ -1,4 +1,4 @@
-from core.ir import Address, Binary, Immediate, Op, PtxType, Register, Symbol
+from core.ir import Address, Binary, Immediate, Mod, Op, PtxType, Register, Symbol
 
 from ..pass_manager import CFG_ANALYSES, FunctionPass, register_pass
 
@@ -62,7 +62,7 @@ class AddressFold(FunctionPass):
             fn = self.function
             w2 = fn.regs.new(PtxType.S64)
             r2 = fn.regs.new(PtxType.S64)
-            block.insert_before(inst, Binary(Op.MUL, PtxType.S32, w2, j, Immediate(k, PtxType.S32), mode="wide"))
+            block.insert_before(inst, Binary(Op.MUL, PtxType.S32, w2, j, Immediate(k, PtxType.S32), mode=Mod.WIDE))
             block.insert_before(inst, Binary(Op.ADD, PtxType.S64, r2, base, w2))
             return Address(r2, addr.offset + c * k)
         return addr
@@ -70,7 +70,7 @@ class AddressFold(FunctionPass):
     def split_index(self, w):
         """w = mul.wide.s32 (add.s32 j, c), k  ->  (j, k, c), else None."""
         m = self.du.single_def(w) if isinstance(w, Register) else None
-        if m is None or m.op is not Op.MUL or m.types != ("wide", PtxType.S32):
+        if m is None or m.op is not Op.MUL or m.types != (Mod.WIDE, PtxType.S32):
             return None
         i, k = m.srcs
         a = self.du.single_def(i) if isinstance(i, Register) else None

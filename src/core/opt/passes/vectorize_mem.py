@@ -1,4 +1,4 @@
-from core.ir import Address, Instruction, Op, Register, StateSpace, Symbol, Vector
+from core.ir import Address, Instruction, Mod, Op, Register, StateSpace, Symbol, Vector
 
 from ..pass_manager import CFG_ANALYSES, FunctionPass, register_pass
 
@@ -117,7 +117,7 @@ class VectorizeMemory(FunctionPass):
 
     def rewrite(self, block, key, run):
         op, types, base = key
-        vtypes = (*types[:-1], f"v{len(run)}", types[-1])
+        vtypes = (*types[:-1], Mod.vec(len(run)), types[-1])
         addr = run[0][1].srcs[0]
         values = Vector(inst.dsts[0] if op is Op.LD else inst.srcs[1] for _, inst in run)
         if op is Op.LD:

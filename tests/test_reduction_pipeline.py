@@ -5,7 +5,7 @@ flow and synchronization that the reduction codegen will produce."""
 import numpy as np
 import pytest
 
-from core.ir import TID_X, Address, Builder, Cmp, Function, Immediate, Instruction, Module, Op, PtxType, StateSpace
+from core.ir import TID_X, Address, Builder, Cmp, Function, Immediate, Instruction, Mod, Module, Op, PtxType, StateSpace
 
 from core.opt import build_pipeline
 from helpers import differential, ops
@@ -47,7 +47,7 @@ def build():
         bits = b.reg(B32)
         b.inst(Op.MOV, B32, dsts=[bits], srcs=[acc])
         other_bits = b.reg(B32)
-        b.inst(Op.SHFL, "sync", "bfly", B32, dsts=[other_bits],
+        b.inst(Op.SHFL, Mod.SYNC, Mod.BFLY, B32, dsts=[other_bits],
                srcs=[bits, Immediate(k, U), Immediate(31, U), Immediate(-1, B32)])
         other = b.reg(F)
         b.inst(Op.MOV, B32, dsts=[other], srcs=[other_bits])
@@ -71,7 +71,7 @@ def build():
         idx = b.mul(S, b.mov(S, Immediate(w, S)), Immediate(1, S))
         part = b.load(StateSpace.SHARED, F, Address(b.add(PtxType.S64, base, b.mul_wide(idx, Immediate(4, S)))))
         total = part if total is None else b.add(F, total, part)
-    b.append(Instruction(Op.RED, (StateSpace.GLOBAL, "add", F), srcs=[Address(out), total]))
+    b.append(Instruction(Op.RED, (StateSpace.GLOBAL, Mod.ADD, F), srcs=[Address(out), total]))
     b.set_block(exit_)
     b.inst(Op.RET)
     return m

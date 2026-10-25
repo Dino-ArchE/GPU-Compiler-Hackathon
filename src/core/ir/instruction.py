@@ -1,4 +1,4 @@
-from .opcode import Cmp, Op
+from .opcode import Cmp, Mod, Op
 from .reg import Register
 from .type_enum import PtxType, StateSpace
 from .value import Address, Immediate, Vector
@@ -10,13 +10,15 @@ from .value import Address, Immediate, Vector
 SIDE_EFFECT_OPS = frozenset({Op.ST, Op.RED, Op.ATOM, Op.CP, Op.BAR, Op.SHFL, Op.MMA, Op.BRA, Op.RET})
 MEMORY_READ_OPS = frozenset({Op.LD, Op.ATOM, Op.CP})
 MEMORY_WRITE_OPS = frozenset({Op.ST, Op.RED, Op.ATOM, Op.CP})
+# what may sit in Instruction.types; a bare str is rejected, so a typo cannot slip through
+MODIFIER_KINDS = (PtxType, StateSpace, Cmp, Mod)
 
 
 class Instruction:
     """One PTX instruction as data: `@guard op.types dsts, srcs;`.
 
-    `op` is an Op; `types` holds the dotted modifiers after it (("global", "v4", "f32")) so passes
-    can match on them. Subclasses are typed constructors that fill these same fields, so the
+    `op` is an Op; `types` holds the dotted modifiers after it ((GLOBAL, Mod.V4, F32)) so passes
+    can match on them; each one is a PtxType, StateSpace, Cmp or Mod, checked on every assignment. Subclasses are typed constructors that fill these same fields, so the
     __str__ and defs()/uses() treat every instruction alike. Stores and branches have no dsts.
     """
 
@@ -28,6 +30,18 @@ class Instruction:
         self.guard = guard        # predicate Register: the instruction runs only where it holds
         self.negate = negate      # @!%p instead of @%p
         self.comment = comment
+
+    @property
+    def types(self):
+        return self._types
+
+    @types.setter
+    def types(self, types):
+        types = tuple(types)
+        for t in types:
+            if not isinstance(t, MODIFIER_KINDS):
+                raise TypeError(f"{self.op}: modifier {t!r} must be a PtxType, StateSpace, Cmp or Mod")
+        self._types = types
 
     def defs(self):
         """Registers this instruction writes."""
@@ -156,7 +170,7 @@ def _registers(value):
 
 def _vec(value):
     """The .v2/.v4 modifier for a Vector operand, nothing for a scalar."""
-    return (f"v{len(value.elems)}",) if isinstance(value, Vector) else ()
+    return (Mod.vec(len(value.elems)),) if isinstance(value, Vector) else ()
 
 
 class Load(Instruction):
@@ -184,7 +198,7 @@ class Sync(Instruction):
     """bar.sync id: block-wide barrier."""
 
     def __init__(self, barrier_id=0, **kw):
-        super().__init__(Op.BAR, ("sync",), srcs=[Immediate(barrier_id, PtxType.U32)], **kw)
+        super().__init__(Op.BAR, (Mod.SYNC,), srcs=[Immediate(barrier_id, PtxType.U32)], **kw)
 
 
 class CpAsync(Instruction):
@@ -192,8 +206,8 @@ class CpAsync(Instruction):
     shared memory without passing through registers (.cg: 16 bytes only, bypasses L1).
     The copy lands at a later cp.async.wait_group; a bar.sync then publishes it to the CTA."""
 
-    def __init__(self, dst_addr, src_addr, nbytes, cache="ca", **kw):
-        super().__init__(Op.CP, ("async", cache, StateSpace.SHARED, StateSpace.GLOBAL),
+    def __init__(self, dst_addr, src_addr, nbytes, cache=Mod.CA, **kw):
+        super().__init__(Op.CP, (Mod.ASYNC, cache, StateSpace.SHARED, StateSpace.GLOBAL),
                          srcs=[dst_addr, src_addr, Immediate(nbytes, PtxType.U32)], **kw)
 
 
@@ -201,14 +215,14 @@ class CpAsyncCommit(Instruction):
     """cp.async.commit_group: close the group of this thread's cp.async issued so far."""
 
     def __init__(self, **kw):
-        super().__init__(Op.CP, ("async", "commit_group"), **kw)
+        super().__init__(Op.CP, (Mod.ASYNC, Mod.COMMIT_GROUP), **kw)
 
 
 class CpAsyncWait(Instruction):
     """cp.async.wait_group n: wait until at most n of this thread's groups are still in flight."""
 
     def __init__(self, pending=0, **kw):
-        super().__init__(Op.CP, ("async", "wait_group"), srcs=[Immediate(pending, PtxType.U32)], **kw)
+        super().__init__(Op.CP, (Mod.ASYNC, Mod.WAIT_GROUP), srcs=[Immediate(pending, PtxType.U32)], **kw)
 
 
 class CvtTf32(Instruction):
@@ -216,7 +230,7 @@ class CvtTf32(Instruction):
     zero), the operand format of the f32 tensor-core mma."""
 
     def __init__(self, dst, src, **kw):
-        super().__init__(Op.CVT, ("rna", "tf32", PtxType.F32), dsts=[dst], srcs=[src], **kw)
+        super().__init__(Op.CVT, (Mod.RNA, Mod.TF32, PtxType.F32), dsts=[dst], srcs=[src], **kw)
 
 
 class Mma(Instruction):
@@ -235,11 +249,11 @@ class Mma(Instruction):
     D may be the same registers as C (accumulate in place).
     """
 
-    SHAPE = "m16n8k8"
+    SHAPE = Mod.M16N8K8
 
     def __init__(self, d, a, b, c, **kw):
-        super().__init__(Op.MMA, ("sync", "aligned", self.SHAPE, "row", "col",
-                                  PtxType.F32, "tf32", "tf32", PtxType.F32),
+        super().__init__(Op.MMA, (Mod.SYNC, Mod.ALIGNED, self.SHAPE, Mod.ROW, Mod.COL,
+                                  PtxType.F32, Mod.TF32, Mod.TF32, PtxType.F32),
                          dsts=[Vector(d)], srcs=[Vector(a), Vector(b), Vector(c)], **kw)
 
 
@@ -251,7 +265,7 @@ class Cvta(Instruction):
     """
 
     def __init__(self, space, dst, src, to=True, ptx_type=PtxType.U64, **kw):
-        types = ("to", space, ptx_type) if to else (space, ptx_type)
+        types = (Mod.TO, space, ptx_type) if to else (space, ptx_type)
         super().__init__(Op.CVTA, types, dsts=[dst], srcs=[src], **kw)
 
 
@@ -259,7 +273,7 @@ class Binary(Instruction):
     """<op>[.mode].<type> dst, a, b: add, sub, mul, div, min, max, rem, and, or, shl, ...
 
     `mode` is the extra modifier some ops need, e.g. mul.lo / mul.wide for integers. With
-    mode="wide" the type names the sources (s32) while dst is twice as wide (an s64 register).
+    mode=Mod.WIDE the type names the sources (s32) while dst is twice as wide (an s64 register).
     """
 
     def __init__(self, op, ptx_type, dst, a, b, mode=None, **kw):

@@ -1,4 +1,4 @@
-from core.ir import Cmp, Immediate, Instruction, Op, Setp
+from core.ir import Cmp, Immediate, Instruction, Mod, Op, Setp
 
 from ..analysis.ranges import is_int
 from ..pass_manager import CFG_ANALYSES, FunctionPass, register_pass
@@ -57,7 +57,7 @@ class RangeFold(FunctionPass):
                 return _mov(d, t, inst.srcs[0] if op is Op.MIN else inst.srcs[1])
             if b.hi <= a.lo:
                 return _mov(d, t, inst.srcs[1] if op is Op.MIN else inst.srcs[0])
-        if op is not Op.MOV and "wide" not in inst.types:
+        if op is not Op.MOV and Mod.WIDE not in inst.types:
             c = rng.constant(d, t)
             if c is not None:
                 return _mov(d, t, Immediate(c, t))

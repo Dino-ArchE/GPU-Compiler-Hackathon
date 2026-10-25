@@ -1,6 +1,6 @@
 import numpy as np
 
-from core.ir import CTAID_X, NTID_X, TID_X, Address, Cmp, Immediate, Op, PtxType, StateSpace
+from core.ir import CTAID_X, NTID_X, TID_X, Address, Cmp, Immediate, Mod, Op, PtxType, StateSpace
 
 from core.opt import Repeat
 from helpers import differential, finish, new_function, ops
@@ -37,7 +37,7 @@ def build_strided(guarded_entry=True, two_entries=False):
         b.set_block(body)
         stride = b.mul(S, b.mov(U, NTID_X), Immediate(1, S))     # invariant arithmetic
         v = b.load(StateSpace.GLOBAL, F, Address(b.add(PtxType.S64, x, b.mul_wide(i, Immediate(4, S)))))
-        b.inst(Op.FMA, "rn", F, dsts=[acc], srcs=[v, s, acc])
+        b.inst(Op.FMA, Mod.RN, F, dsts=[acc], srcs=[v, s, acc])
         b.inst(Op.ADD, S, dsts=[i], srcs=[i, stride])
         b.bra(head)
         b.set_block(done)
@@ -57,7 +57,7 @@ def loop_blocks(f):
 def test_hoists_invariants_out_of_strided_loop():
     f = differential(build_strided(), ["split-blocks", "licm"], *ARGS, rtol=1e-5)
     inside = [i for b in loop_blocks(f) for i in b.instructions]
-    assert not any(i.op is Op.MUL and i.types == ("lo", S) for i in inside)
+    assert not any(i.op is Op.MUL and i.types == (Mod.LO, S) for i in inside)
     assert sum(i.op is Op.LD for i in inside) == 1               # only x[i] stays
     assert not any(i.op is Op.MOV and i.srcs[0] is NTID_X for i in inside)
 

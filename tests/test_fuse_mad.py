@@ -1,6 +1,6 @@
 import numpy as np
 
-from core.ir import CTAID_X, NTID_X, TID_X, Address, Immediate, Op, PtxType, StateSpace
+from core.ir import CTAID_X, NTID_X, TID_X, Address, Immediate, Mod, Op, PtxType, StateSpace
 
 from core.opt import Repeat
 from helpers import differential, finish, new_function, ops
@@ -18,7 +18,7 @@ def build(reuse_mul=False, rn=False):
         gid = b.add(S, b.mul(S, b.mov(U, CTAID_X), b.mov(U, NTID_X)), b.mov(U, TID_X))
         off = b.mul_wide(gid, Immediate(4, S))
         v = b.load(StateSpace.GLOBAL, F, Address(b.add(PtxType.S64, x, off)))
-        p = b.binary(Op.MUL, F, v, Immediate(3.0, F), mode="rn" if rn else None)
+        p = b.binary(Op.MUL, F, v, Immediate(3.0, F), mode=Mod.RN if rn else None)
         r = b.add(F, p, Immediate(1.0, F))
         if reuse_mul:
             r = b.add(F, r, p)

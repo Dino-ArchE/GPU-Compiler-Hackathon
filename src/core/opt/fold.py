@@ -9,7 +9,7 @@ bit-for-bit (.approx, fused mad/fma) are not folded.
 import math
 import struct
 
-from core.ir import Cmp, Op, PtxType
+from core.ir import Cmp, Mod, Op, PtxType
 
 from .analysis.ranges import WIDE, is_int, wrap
 
@@ -32,7 +32,7 @@ def c_div(a, b):
 
 def result_type(inst):
     t = inst.ptx_type
-    return WIDE[t] if "wide" in inst.types else t
+    return WIDE[t] if Mod.WIDE in inst.types else t
 
 
 def evaluate(inst, values):
@@ -53,10 +53,10 @@ def evaluate(inst, values):
         r = vals[0] - vals[1]
     elif op is Op.MUL:
         r = vals[0] * vals[1]
-        if "hi" in mods:
+        if Mod.HI in mods:
             r >>= n
     elif op is Op.MAD:
-        if "hi" in mods:
+        if Mod.HI in mods:
             return None
         r = vals[0] * vals[1] + wrap(int(values[2]), rt)
     elif op is Op.DIV:
@@ -96,9 +96,9 @@ def evaluate(inst, values):
 
 
 def _evaluate_float(op, mods, t, values):
-    if op not in FLOAT_FOLDABLE or "approx" in mods or "ftz" in mods:
+    if op not in FLOAT_FOLDABLE or Mod.APPROX in mods or Mod.FTZ in mods:
         return None
-    if op in (Op.DIV, Op.RCP, Op.SQRT) and "rn" not in mods:
+    if op in (Op.DIV, Op.RCP, Op.SQRT) and Mod.RN not in mods:
         return None
     v = [float(x) for x in values]
     try:

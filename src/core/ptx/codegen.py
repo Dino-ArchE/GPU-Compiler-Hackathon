@@ -2,7 +2,7 @@ import math
 
 from core.ir import (
     CTAID_X, NTID_X, TID_X, Address, Binary, Builder, Cmp, Function, Immediate, Instruction, Load,
-    Module, Mov, Op, PtxType, Register, StateSpace, Store, Vector,
+    Mod, Module, Mov, Op, PtxType, Register, StateSpace, Store, Vector,
 )
 
 from .ops import lower_elementwise
@@ -261,7 +261,7 @@ class CodeGen:
             # partial results from many blocks: red.add into a buffer meta.json zeroes first
             if len(srcs) != 1:
                 raise NotImplementedError(f"vector atomic Write to {write.output}")
-            self.builder.append(Instruction(Op.RED, (buffer.space, "add", buffer.elem_type), srcs=[addr, srcs[0]]))
+            self.builder.append(Instruction(Op.RED, (buffer.space, Mod.ADD, buffer.elem_type), srcs=[addr, srcs[0]]))
             return
         src = srcs[0] if len(srcs) == 1 else Vector(srcs)
         self.builder.store(buffer.space, buffer.elem_type, addr, src)
@@ -324,7 +324,7 @@ class CodeGen:
         dst = self.address(smem, index)
         src = self.address(self.sym_table.buffer(copy.src), copy.src_index)
         # .cg (L2 only) exists for 16-byte copies; smaller ones must use .ca
-        level = "cg" if copy.nbytes == 16 else "ca"
+        level = Mod.CG if copy.nbytes == 16 else Mod.CA
         self.builder.cp_async(dst, src, copy.nbytes, cache=level)
 
     def visit_CpAsyncCommit(self, commit):
@@ -370,7 +370,7 @@ class CodeGen:
                 src = self.sym_table.scalar(state)
                 dst = self.builder.reg(type(src).PTX_TYPE)   # same register kind as the state
                 srcs = [src, Immediate(offset, PtxType.U32), WARP_CLAMP, mask]
-                self.builder.append(Instruction(Op.SHFL, ("sync", "bfly", PtxType.B32), dsts=[dst], srcs=srcs))
+                self.builder.append(Instruction(Op.SHFL, (Mod.SYNC, Mod.BFLY, PtxType.B32), dsts=[dst], srcs=srcs))
                 self.sym_table.define_scalar(other, dst)
             for combine in shuffle.combine_states:
                 self.assign(combine, shuffle.dtype)
@@ -468,7 +468,7 @@ class CodeGen:
     def visit_Sync(self, sync):
         """bar.sync 0 (whole CTA), bar.warp.sync (one warp), or a named barrier over `count`."""
         if sync.warp:
-            self.builder.append(Instruction(Op.BAR, ("warp", "sync"), srcs=[FULL_MASK]))
+            self.builder.append(Instruction(Op.BAR, (Mod.WARP, Mod.SYNC), srcs=[FULL_MASK]))
         else:
             self.barrier(sync.barrier_id, sync.count)
 
@@ -479,7 +479,7 @@ class CodeGen:
         if count is None:
             raise ValueError(f"named barrier {barrier_id} needs a thread count")
         ids = [Immediate(barrier_id, PtxType.U32), Immediate(count, PtxType.U32)]
-        self.builder.append(Instruction(Op.BAR, ("sync",), srcs=ids))
+        self.builder.append(Instruction(Op.BAR, (Mod.SYNC,), srcs=ids))
 
     def scoped(self, body):
         """Visit a loop body or a Cond arm. A name that existed before and was rebound inside

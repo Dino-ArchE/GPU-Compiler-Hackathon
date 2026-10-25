@@ -1,4 +1,4 @@
-from core.ir import Instruction, Op, Register
+from core.ir import Instruction, Mod, Op, Register
 
 from ..pass_manager import CFG_ANALYSES, FunctionPass, register_pass
 
@@ -52,10 +52,10 @@ class FuseMultiplyAdd(FunctionPass):
             if at.is_float:
                 if mul.types != (at,) or add.types != (at,):
                     continue
-                return Instruction(Op.FMA, ("rn", at), [add.dsts[0]], [a, b, c])
+                return Instruction(Op.FMA, (Mod.RN, at), [add.dsts[0]], [a, b, c])
             mt = mul.ptx_type
-            if mul.types == ("lo", mt) and mt == at:
-                return Instruction(Op.MAD, ("lo", at), [add.dsts[0]], [a, b, c])
+            if mul.types == (Mod.LO, mt) and mt == at:
+                return Instruction(Op.MAD, (Mod.LO, at), [add.dsts[0]], [a, b, c])
         return None
 
 

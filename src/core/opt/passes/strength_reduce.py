@@ -1,4 +1,4 @@
-from core.ir import Binary, Immediate, Instruction, Op, PtxType, Register
+from core.ir import Binary, Immediate, Instruction, Mod, Op, PtxType, Register
 
 from ..analysis.ranges import SIGNED, is_int
 from ..pass_manager import CFG_ANALYSES, FunctionPass, register_pass
@@ -67,7 +67,7 @@ class StrengthReduce(FunctionPass):
             return None
         d, (x, y) = inst.dsts[0], inst.srcs
         c = self.rng.constant(y, t) if isinstance(y, Immediate) else None
-        if op is Op.MUL and inst.types == ("lo", t) and c is not None and c > 1 and c & (c - 1) == 0:
+        if op is Op.MUL and inst.types == (Mod.LO, t) and c is not None and c > 1 and c & (c - 1) == 0:
             return [Binary(Op.SHL, BITS_OF[t], d, x, Immediate(c.bit_length() - 1, PtxType.U32))]
         if op not in (Op.DIV, Op.REM) or not isinstance(x, Register):
             return None
@@ -94,11 +94,11 @@ class StrengthReduce(FunctionPass):
         m, s = magic
         regs = self.function.regs
         q = d if op is Op.DIV and s == 0 else regs.new(PtxType.U32)
-        seq = [Binary(Op.MUL, PtxType.U32, q, x, Immediate(m, PtxType.U32), mode="hi")]
+        seq = [Binary(Op.MUL, PtxType.U32, q, x, Immediate(m, PtxType.U32), mode=Mod.HI)]
         if s:
             q2 = d if op is Op.DIV else regs.new(PtxType.U32)
             seq.append(Binary(Op.SHR, PtxType.U32, q2, q, Immediate(s, PtxType.U32)))
             q = q2
         if op is Op.REM:
-            seq.append(Instruction(Op.MAD, ("lo", PtxType.S32), dsts=[d], srcs=[q, Immediate(-c, PtxType.S32), x]))
+            seq.append(Instruction(Op.MAD, (Mod.LO, PtxType.S32), dsts=[d], srcs=[q, Immediate(-c, PtxType.S32), x]))
         return seq

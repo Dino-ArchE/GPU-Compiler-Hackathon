@@ -5,7 +5,7 @@ numbers from the GPU or a ptxas error on generated text.
 """
 
 from core.ir import (
-    TYPE_TO_CLASS, Address, BasicBlock, Immediate, Op, PtxType, Register, SpecialRegister, Value,
+    TYPE_TO_CLASS, Address, BasicBlock, Immediate, Mod, Op, PtxType, Register, SpecialRegister, Value,
     Vector, VirtualRegister,
 )
 
@@ -69,12 +69,12 @@ def verify(function, after="?"):
                 fail(f"{inst!r}: only bra takes a block operand")
             if inst.op is not Op.MOV and any(isinstance(v, SpecialRegister) for v in inst.srcs):
                 fail(f"{inst!r}: special registers can only be read by mov")
-            if inst.op in SAME_TYPE_DST and "wide" not in inst.types and len(inst.dsts) == 1:
+            if inst.op in SAME_TYPE_DST and Mod.WIDE not in inst.types and len(inst.dsts) == 1:
                 d, t = inst.dsts[0], inst.ptx_type
                 if t is not None and isinstance(d, Register) and type(d) is not TYPE_TO_CLASS[t] \
                         and not _bitcast_mov(inst, d, t):
                     fail(f"{inst!r}: dst {d} has the wrong register class for .{t}")
-            if inst.op in SAME_TYPE_DST and inst.op not in (Op.MOV, Op.SELP) and "wide" not in inst.types:
+            if inst.op in SAME_TYPE_DST and inst.op not in (Op.MOV, Op.SELP) and Mod.WIDE not in inst.types:
                 t = inst.ptx_type
                 srcs = inst.srcs[:1] if inst.op in (Op.SHL, Op.SHR) else inst.srcs
                 for v in srcs:
