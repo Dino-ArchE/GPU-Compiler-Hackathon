@@ -23,12 +23,25 @@ PIPELINES = {
 }
 
 
-def build_pipeline(level=None, passes=None):
-    """A pipeline from an -O level, or from an explicit list of pass names (always canonicalized)."""
+def build_pipeline(level=None, passes=None, disable=()):
+    """A pipeline from an -O level, or from an explicit list of pass names (always canonicalized),
+    without the passes named in `disable` (also inside Repeat groups; split-blocks always stays)."""
     if passes is not None:
         names = [p for p in passes if p]
-        return names if not names or names[0] == "split-blocks" else ["split-blocks", *names]
-    return list(PIPELINES[level])
+        pipeline = names if not names or names[0] == "split-blocks" else ["split-blocks", *names]
+    else:
+        pipeline = list(PIPELINES[level])
+    return _without(pipeline, set(disable) - {"split-blocks"})
+
+
+def _without(pipeline, disable):
+    out = []
+    for item in pipeline:
+        if isinstance(item, Repeat):
+            out.append(Repeat(_without(item.passes, disable), item.max_iterations))
+        elif item not in disable:
+            out.append(item)
+    return out
 
 
 __all__ = ["PIPELINES", "Repeat", "build_pipeline"]

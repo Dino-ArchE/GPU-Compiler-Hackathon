@@ -68,7 +68,7 @@ src/core/ir/                 our IR, data only (+ IRBuilder):
                              result register, LLVM-style; inst(Op.X, ...) is the generic fallback
 src/core/ptx/printer.py      print_module(Module) -> PTX text; the only code that knows PTX syntax
 src/core/opt/                optimizer over our IR (compile.py -O0|-O1|-O2, default -O2;
-                             --passes a,b / --print-after X|all / --stats). On any optimizer
+                             --passes a,b / --disable a,b / --print-after X|all / --stats). On any optimizer
                              exception compile.py falls back to unoptimized PTX.
     pass_manager.py          FunctionPass/Analysis + @register_pass/@register_analysis (one class
                              per file, auto-discovered), AnalysisManager cache (`preserves`
@@ -85,6 +85,8 @@ src/core/opt/                optimizer over our IR (compile.py -O0|-O1|-O2, defa
 tests/                       pytest; interp.py is a reference interpreter for our IR (threads as
                              coroutines, bar.sync/shfl supported). helpers.differential() runs a
                              kernel before/after passes, compares outputs, then ptxas-checks it.
+                             test_problems runs p/r/f in the interpreter; a/m take minutes there,
+                             so they need EMMY_SLOW=1 (the runner is their real check)
 tools/check_opt.sh           -O0 vs -O2 + ptxas over every supported problem
 tools/run_runner.sh          submit every supported problem to the runner
 tools/mma_probe.py           re-checks the mma fragment layout on the runner (disguised as p01)
