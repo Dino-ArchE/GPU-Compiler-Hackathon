@@ -14,15 +14,16 @@ SMEM_TYPES = {"float": PtxType.F32, "half": PtxType.F16, "double": PtxType.F64, 
 
 # Index arithmetic (Load/Write indices, Cond) is 32-bit signed, like the reference .cu's `int`.
 INDEX_TYPE = PtxType.S32
+INT32_MAX = 2**31 - 1
 
 # BinaryExpr operators on indices
-INDEX_ARITH = {"+": Op.ADD, "-": Op.SUB, "*": Op.MUL, "/": Op.DIV, "%": Op.REM}
+# indices are non-negative, so floor division // is the same as truncating /
+INDEX_ARITH = {"+": Op.ADD, "-": Op.SUB, "*": Op.MUL, "/": Op.DIV, "//": Op.DIV, "%": Op.REM, "^": Op.XOR}
+INDEX_LOGIC = {"&&": Op.AND, "||": Op.OR}
 INDEX_CMP = {"<": Cmp.LT, "<=": Cmp.LE, ">": Cmp.GT, ">=": Cmp.GE, "==": Cmp.EQ, "!=": Cmp.NE}
 
 
 # statements that every thread of the block must reach: a guard may not branch around them
-BARRIER_NODES = {"Sync", "WarpShuffle", "TreeHalve"}
-
 # shfl.sync operands: all 32 lanes take part; clamp 0x1f = whole warp
 FULL_MASK = Immediate(0xFFFFFFFF, PtxType.B32)
 WARP_CLAMP = Immediate(0x1F, PtxType.B32)
@@ -57,8 +58,10 @@ def _compare(op, a, b):
 
 def _fold(op, a, b):
     """Constant-fold two int literals with C semantics (/ and % truncate toward zero)."""
-    if op == "/":
+    if op in ("/", "//"):
         return int(a / b)
+    if op == "^":
+        return a ^ b
     if op == "%":
         return a - int(a / b) * b
     return {"+": a + b, "-": a - b, "*": a * b}[op]
@@ -109,17 +112,22 @@ class CodeGen(KernelVisitor):
     def visit_Tile(self, tile):
         """One thread per point of the axes' iteration space.
 
-        1. gid = ctaid.x * ntid.x + tid.x                        (mad.lo.s32)
-        2. guard, only if N < grid*block (N = prod of axis extents):
-               p = builder.setp(Cmp.GE, INDEX_TYPE, gid, N) ; builder.bra(self.exit, guard=p)
-           the body falls through; gen() places self.exit (holding `ret`) last.
-        3. decode gid into the axes, row-major mixed radix, and define_scalar each axis name.
-           One axis (all of p*): the axis is gid itself, no div/rem.
+        1. gid = ctaid.x * ntid.x + tid.x; with an aux (producer) band past the cooperative
+           threads, gid = ctaid.x * block_threads + tid.x % block_threads instead.
+        2. guard, only if some launched thread has no cell (N < grid*block, or an aux band):
+               @(gid >= N) bra EXIT    -- gen() places EXIT (holding `ret`) last.
+           Barriers inside stay correct: exited threads no longer count at bar.sync, and
+           shuffles use the active-lane mask (the reference .cu does the same).
+        3. decode gid into the axes (decode_axes) and define_scalar each axis name.
         4. visit the body.
         """
         b = self.builder
         ctaid, ntid, tid = (b.mov(PtxType.U32, sreg) for sreg in (CTAID_X, NTID_X, TID_X))
-        gid = b.mad(INDEX_TYPE, ctaid, ntid, tid)
+        if tile.aux_threads:
+            cells = Immediate(tile.block_threads, INDEX_TYPE)
+            gid = b.mad(INDEX_TYPE, ctaid, cells, b.binary(Op.REM, PtxType.U32, tid, cells))
+        else:
+            gid = b.mad(INDEX_TYPE, ctaid, ntid, tid)
 
         # implicit vars used by Cond/TreeHalve in reductions
         self.sym_table.define_scalar("lane", b.binary(Op.AND, PtxType.B32, tid, Immediate(31, PtxType.B32)))
@@ -127,21 +135,65 @@ class CodeGen(KernelVisitor):
 
         extents = [axis.extent.as_static() for axis in tile.axes]
         n = math.prod(extents)
-        if n < math.prod(self.kernel.grid) * math.prod(self.kernel.block):
-            if any(type(stmt).__name__ in BARRIER_NODES for stmt in _walk(tile.body)):
-                raise NotImplementedError("guarded Tile containing a barrier or warp shuffle")
+        if n > INT32_MAX:
+            raise NotImplementedError(f"Tile of {n} cells needs 64-bit indexing")
+        if tile.aux_threads or n < math.prod(self.kernel.grid) * math.prod(self.kernel.block):
             outside = b.setp(Cmp.GE, INDEX_TYPE, gid, Immediate(n, INDEX_TYPE))
             b.bra(self.exit, guard=outside)
 
-        # peel axes off the end: last = rest % ext, rest /= ext, ...; the first axis is what's left
-        rest = gid
-        for axis, ext in zip(reversed(tile.axes[1:]), reversed(extents[1:])):
-            ext = Immediate(ext, INDEX_TYPE)
-            self.sym_table.define_scalar(axis.name, b.binary(Op.REM, INDEX_TYPE, rest, ext))
-            rest = b.binary(Op.DIV, INDEX_TYPE, rest, ext)
-        self.sym_table.define_scalar(tile.axes[0].name, rest)
-
+        for axis, value in zip(tile.axes, self.decode_axes(tile, gid, extents)):
+            self.sym_table.define_scalar(axis.name, value)
         self.visit(tile.body)
+
+    def decode_axes(self, tile, gid, extents):
+        """gid -> one index per axis, row-major: axis i = (gid / stride_i) % extent_i, where
+        stride_i is the product of the extents to its right (the first axis needs no %).
+
+        Grouped rasterization (raster_group G over the adjacent raster_axes m, n) remaps those
+        two axes so G block-tiles of the grouped axis run fastest; consecutive CTAs then reuse
+        the same operand slab from L2. With the grouped axis a (extent Ea), the other b (Eb)
+        and sub = the (m, n) part of gid:  grp = sub / (G*Eb),  size = min(G, Ea - grp*G),
+            a = grp*G + (sub % (G*Eb)) % size,   b = (sub % (G*Eb)) / size
+        """
+        strides = [math.prod(extents[i + 1:]) for i in range(len(extents))]
+        values = []
+        for i, (stride, ext) in enumerate(zip(strides, extents)):
+            v = self.div_index(gid, stride)
+            values.append(v if i == 0 else self.rem_index(v, ext))
+
+        raster = self.raster(tile, extents)
+        if raster is not None:
+            gi, oi, g = raster
+            ea, eb = extents[gi], extents[oi]
+            mi, ni = min(gi, oi), max(gi, oi)
+            sub = self.div_index(gid, strides[ni])
+            if mi != 0:
+                sub = self.rem_index(sub, ea * eb)
+            grp = self.div_index(sub, g * eb)
+            within = self.rem_index(sub, g * eb)
+            if ea % g == 0:
+                size = Immediate(g, INDEX_TYPE)
+            else:
+                left = self.builder.binary(Op.SUB, INDEX_TYPE, Immediate(ea, INDEX_TYPE), self.mul_index(grp, g))
+                size = self.builder.binary(Op.MIN, INDEX_TYPE, left, Immediate(g, INDEX_TYPE))
+            b = self.builder
+            values[gi] = self.add_index(self.mul_index(grp, g), b.binary(Op.REM, INDEX_TYPE, within, size))
+            values[oi] = b.binary(Op.DIV, INDEX_TYPE, within, size)
+        return values
+
+    @staticmethod
+    def raster(tile, extents):
+        """(grouped axis, other axis, G) when grouped rasterization applies, else None."""
+        if not (tile.raster_group and tile.raster_axes):
+            return None
+        names = [axis.name for axis in tile.axes]
+        m, n = tile.raster_axes
+        if m not in names or n not in names or names.index(n) != names.index(m) + 1:
+            return None
+        mi, ni = names.index(m), names.index(n)
+        gi, oi = (mi, ni) if tile.raster_orient == "m" else (ni, mi)
+        g = min(tile.raster_group, extents[gi])
+        return (gi, oi, g) if extents[gi] > 1 and g > 1 else None
 
     def visit_Load(self, load):
         """names = load input[index]: buffer element(s) -> scalar register(s).
@@ -185,6 +237,8 @@ class CodeGen(KernelVisitor):
         # the vector form assumes values are consecutive elements; PTX only has v2/v4
         if len(write.values) not in (1, 2, 4):
             raise NotImplementedError(f"Write of {len(write.values)} values to {write.output}")
+        if write.swizzle != "NONE":
+            raise NotImplementedError(f"swizzled Write ({write.swizzle}) to {write.output}")
         buffer = self.sym_table.buffer(write.output)
         addr = self.address(buffer, write.index)
         srcs = [self.operand(v) for v in write.values]
@@ -246,6 +300,8 @@ class CodeGen(KernelVisitor):
     def visit_CpAsyncCopy(self, copy):
         """cp.async: copy nbytes global -> shared without passing through registers.
         The shared index is smem_index + lane_index, element-wise (lane_index may be None)."""
+        if copy.swizzle != "NONE":
+            raise NotImplementedError(f"swizzled cp.async ({copy.swizzle}) into {copy.smem}")
         smem = self.sym_table.buffer(copy.smem)
         index = copy.smem_index
         if copy.lane_index:
@@ -291,12 +347,15 @@ class CodeGen(KernelVisitor):
     def visit_WarpShuffle(self, shuffle):
         """XOR butterfly over `length` lanes: each round, read every state from lane ^ offset
         into state_b, then run combine_states. Afterwards every lane holds the result."""
+        # the lanes still running: a guarded partial warp must not name exited lanes
+        mask = self.builder.reg(PtxType.B32)
+        self.builder.append(Instruction(Op.ACTIVEMASK, (PtxType.B32,), dsts=[mask]))
         offset = shuffle.length // 2
         while offset >= 1:
             for state, other in zip(shuffle.state, shuffle.state_b):
                 src = self.sym_table.scalar(state)
                 dst = self.builder.reg(type(src).PTX_TYPE)   # same register kind as the state
-                srcs = [src, Immediate(offset, PtxType.U32), WARP_CLAMP, FULL_MASK]
+                srcs = [src, Immediate(offset, PtxType.U32), WARP_CLAMP, mask]
                 self.builder.append(Instruction(Op.SHFL, ("sync", "bfly", PtxType.B32), dsts=[dst], srcs=srcs))
                 self.sym_table.define_scalar(other, dst)
             for combine in shuffle.combine_states:
@@ -310,11 +369,18 @@ class CodeGen(KernelVisitor):
                                     bar.sync
             state = buf[0]
         """
-        if halve.inner is not None:
-            raise NotImplementedError("TreeHalve.inner")
         b = self.builder
         tid = self.sym_table.scalar(halve.tid_var)
         bufs = [self.sym_table.buffer(name) for name in halve.bufs]
+        # segmented layout: slot(t) = t*scale + inner_var, root = inner_var (flat: t and 0)
+        if halve.inner is not None:
+            inner_name, scale = halve.inner
+            inner = self.sym_table.scalar(inner_name)
+            slot = lambda t: self.add_index(self.mul_index(t, scale), inner)  # noqa: E731
+            root = inner
+        else:
+            slot = lambda t: t  # noqa: E731
+            root = Immediate(0, INDEX_TYPE)
         s = halve.length // 2
         while s >= 1:
             skip = b.new_block("HALVE")
@@ -322,18 +388,18 @@ class CodeGen(KernelVisitor):
             b.bra(skip, guard=active, negate=True)
             partner = b.add(INDEX_TYPE, tid, Immediate(s, INDEX_TYPE))
             for buf, state, other in zip(bufs, halve.state, halve.state_b):
-                self.sym_table.define_scalar(state, b.load(buf.space, buf.elem_type, self.element(buf, tid)))
-                self.sym_table.define_scalar(other, b.load(buf.space, buf.elem_type, self.element(buf, partner)))
+                self.sym_table.define_scalar(state, b.load(buf.space, buf.elem_type, self.element(buf, slot(tid))))
+                self.sym_table.define_scalar(other, b.load(buf.space, buf.elem_type, self.element(buf, slot(partner))))
             for combine in halve.combine_states:
                 self.assign(combine, halve.dtype)
             for buf, state in zip(bufs, halve.state):
-                b.store(buf.space, buf.elem_type, self.element(buf, tid), self.sym_table.scalar(state))
+                b.store(buf.space, buf.elem_type, self.element(buf, slot(tid)), self.sym_table.scalar(state))
             b.set_block(skip)
-            b.sync(halve.barrier_id)
+            self.barrier(halve.barrier_id, halve.barrier_count)
             s //= 2
         # every thread reads the total; this also replaces names only set inside the branches
         for buf, state in zip(bufs, halve.state):
-            self.sym_table.define_scalar(state, b.load(buf.space, buf.elem_type, Address(buf.base)))
+            self.sym_table.define_scalar(state, b.load(buf.space, buf.elem_type, self.element(buf, root)))
 
     def visit_Smem(self, smem):
         """Declares a shared array (printed at module scope); emits no instructions."""
@@ -377,7 +443,20 @@ class CodeGen(KernelVisitor):
         b.set_block(end)
 
     def visit_Sync(self, sync):
-        self.builder.sync(sync.barrier_id)
+        """bar.sync 0 (whole CTA), bar.warp.sync (one warp), or a named barrier over `count`."""
+        if sync.warp:
+            self.builder.append(Instruction(Op.BAR, ("warp", "sync"), srcs=[FULL_MASK]))
+        else:
+            self.barrier(sync.barrier_id, sync.count)
+
+    def barrier(self, barrier_id, count=None):
+        if barrier_id == 0:
+            self.builder.sync(0)
+            return
+        if count is None:
+            raise ValueError(f"named barrier {barrier_id} needs a thread count")
+        ids = [Immediate(barrier_id, PtxType.U32), Immediate(count, PtxType.U32)]
+        self.builder.append(Instruction(Op.BAR, ("sync",), srcs=ids))
 
     def scoped(self, body):
         """Visit a loop body or a Cond arm. A name that existed before and was rebound inside
@@ -413,6 +492,8 @@ class CodeGen(KernelVisitor):
             if isinstance(left, Immediate) and isinstance(right, Immediate):
                 return Immediate(int(_compare(binary.op, left.value, right.value)), PtxType.PRED)
             return self.builder.setp(INDEX_CMP[binary.op], INDEX_TYPE, left, right)
+        if binary.op in INDEX_LOGIC:
+            return self.logic(binary.op, left, right)
         if binary.op not in INDEX_ARITH:
             raise NotImplementedError(f"index operator {binary.op!r}")
         # PTX needs at least one register operand, so two literals are folded here
@@ -420,7 +501,20 @@ class CodeGen(KernelVisitor):
             return Immediate(_fold(binary.op, left.value, right.value), INDEX_TYPE)
         if binary.op == "*":
             return self.builder.mul(INDEX_TYPE, left, right)
+        if binary.op == "^":   # bitwise ops are typed by width, not sign
+            return self.builder.binary(Op.XOR, PtxType.B32, left, right)
         return self.builder.binary(INDEX_ARITH[binary.op], INDEX_TYPE, left, right)
+
+    def logic(self, op, left, right):
+        """&& / || on predicates; a folded (constant) side decides or drops out."""
+        for const, other in ((left, right), (right, left)):
+            if isinstance(const, Immediate):
+                if isinstance(other, Immediate):
+                    value = (const.value and other.value) if op == "&&" else (const.value or other.value)
+                    return Immediate(int(bool(value)), PtxType.PRED)
+                absorbing = not const.value if op == "&&" else const.value
+                return Immediate(int(bool(const.value)), PtxType.PRED) if absorbing else other
+        return self.builder.binary(INDEX_LOGIC[op], PtxType.PRED, left, right)
 
     def visit_TernaryExpr(self, ternary):
         """cond ? a : b on indices -> selp (both sides are computed; they are cheap)."""
@@ -464,6 +558,18 @@ class CodeGen(KernelVisitor):
         base = buffer.base if isinstance(buffer.base, Register) else b.mov(PtxType.U64, buffer.base)
         offset = b.mul_wide(flat, Immediate(nbytes, INDEX_TYPE))
         return Address(b.add(PtxType.S64, base, offset))
+
+    def div_index(self, value, k):
+        if k == 1:
+            return value
+        if isinstance(value, Immediate):
+            return Immediate(int(value.value / k), INDEX_TYPE)
+        return self.builder.binary(Op.DIV, INDEX_TYPE, value, Immediate(k, INDEX_TYPE))
+
+    def rem_index(self, value, k):
+        if isinstance(value, Immediate):
+            return Immediate(value.value % k, INDEX_TYPE)
+        return self.builder.binary(Op.REM, INDEX_TYPE, value, Immediate(k, INDEX_TYPE))
 
     def mul_index(self, value, k):
         if isinstance(value, Immediate):

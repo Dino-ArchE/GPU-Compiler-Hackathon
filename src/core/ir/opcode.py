@@ -47,6 +47,7 @@ class Op(StrEnum):
     RET = "ret"
     BAR = "bar"
     SHFL = "shfl"
+    ACTIVEMASK = "activemask"
     # atomics
     RED = "red"
     ATOM = "atom"

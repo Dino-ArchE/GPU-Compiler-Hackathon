@@ -27,7 +27,8 @@ are fine; ask before implementing a whole phase.
   wrong for p02/f01/m01/m02; the raw JSON graph node's `inputs` + `outputs` matches 15/15.)
 - Header: `.version 8.0` / `.target sm_89` / `.address_size 64`. ASCII only, even in comments.
 - Correct under `meta.json` grid/block. The thread guard `gid < N` (N = product of Tile axis
-  extents) is NOT in the IR. Derive it, and don't let guarded threads skip a `bar.sync`.
+  extents) is NOT in the IR. Derive it. Guarded threads exit (Emmy's .cu wraps barriers in the
+  same `if`); exited threads don't count at `bar.sync`, and shuffles use `activemask`.
 - `ConstantOp` nodes arrive as 1-element buffer args.
 
 ## Architecture (LLVM-style: visitor -> our IR -> printer)
@@ -80,7 +81,11 @@ Phase order: pointwise (p*) -> reductions (r*) -> fused (f*) -> attention (a*) -
   `Tile.body`, loop bodies and `Cond.body` are also `Body`s.
 - **Tile decode:** `gid = ctaid.x*ntid.x + tid.x`, then the axes are decoded row-major, mixed-radix
   (last axis = `gid % ext`, earlier ones `(gid / stride) % ext`, first one `gid / stride`).
-  `raster_axes` doesn't change the decode in any reference `.cu`.
+  `raster_axes` alone doesn't change it; `raster_group` G > 1 remaps the two raster axes
+  (grouped CTA order, see `decode_axes`). `aux_threads` decodes `tid % block_threads`.
+- TASK.md marks ops absent from the hidden set with `*`; every unmarked field may appear.
+  Test unexercised paths by mutating open problems (raster/guard/named barriers keep
+  `expected.npz` valid).
 - `lane = tid.x & 31`, `warp = tid.x >> 5` are implicit vars used by `Cond`/`TreeHalve`.
 - **Buffer shapes:** `op.inputs`/`op.outputs` tensors report `shape=()`. Take shapes from the
   graph-level JSON nodes and flatten multi-dim indices row-major. `Smem` uses its own `extents`.
