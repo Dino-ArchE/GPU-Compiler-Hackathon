@@ -154,99 +154,96 @@ class Thread:
             ii += 1
             if inst.guard is not None and self.regs[inst.guard] == inst.negate:
                 continue
-            op = inst.op
-            if op is Op.RET:
-                return
-            if op is Op.BRA:
-                bi, ii = index[inst.target], 0
-                continue
-            if op is Op.BAR:
-                if Mod.WARP not in inst.types:       # bar.warp.sync: lanes already run in lockstep here
-                    yield ("bar",)
-                continue
-            if op is Op.ACTIVEMASK:
-                self.write(inst.dsts[0], "b32", (yield ("activemask",)))
-                continue
-            if op is Op.MMA:
-                a, b, c = (v.elems for v in inst.srcs)
-                frag = ([self.read(r, "b32") for r in a], [self.read(r, "b32") for r in b],
-                        [self.read(r, "f32") for r in c])
-                result = yield ("mma", frag)
-                for r, v in zip(inst.dsts[0].elems, result):
-                    self.write(r, "f32", v)
-                continue
-            if op is Op.SHFL:
-                mode = inst.types[1]
-                t = inst.types[-1]
-                a, b, c = (self.read(v, t if k == 0 else "u32") for k, v in enumerate(inst.srcs[:3]))
-                result = yield ("shfl", mode, a, b, c)
-                self.write(inst.dsts[0], t, result)
-                continue
-            self.execute(inst)
+            # control flow and the warp/CTA collectives need the scheduler; the rest is local
+            match inst.op:
+                case Op.RET:
+                    return
+                case Op.BRA:
+                    bi, ii = index[inst.target], 0
+                case Op.BAR:
+                    if Mod.WARP not in inst.types:       # bar.warp.sync: lanes already run in lockstep here
+                        yield ("bar",)
+                case Op.ACTIVEMASK:
+                    self.write(inst.dsts[0], "b32", (yield ("activemask",)))
+                case Op.MMA:
+                    a, b, c = (v.elems for v in inst.srcs)
+                    frag = ([self.read(r, "b32") for r in a], [self.read(r, "b32") for r in b],
+                            [self.read(r, "f32") for r in c])
+                    result = yield ("mma", frag)
+                    for r, v in zip(inst.dsts[0].elems, result):
+                        self.write(r, "f32", v)
+                case Op.SHFL:
+                    mode = inst.types[1]
+                    t = inst.types[-1]
+                    a, b, c = (self.read(v, t if k == 0 else "u32") for k, v in enumerate(inst.srcs[:3]))
+                    result = yield ("shfl", mode, a, b, c)
+                    self.write(inst.dsts[0], t, result)
+                case _:
+                    self.execute(inst)
 
     def execute(self, inst):
         op, types = inst.op, inst.types
         t = inst.ptx_type
-        if op is Op.LD and inst.space is StateSpace.PARAM:
-            self.write(inst.dsts[0], t, self.params[inst.srcs[0].base])   # the buffer's pointer
-            return
-        if op is Op.LD:
-            dst, addr = inst.dsts[0], self.addr(inst.srcs[0])
-            regs = dst.elems if isinstance(dst, Vector) else (dst,)
-            n = BITS[t] // 8
-            for k, r in enumerate(regs):
-                self.regs[r] = self.mem.read(addr + k * n, t)
-            return
-        if op is Op.ST:
-            addr, src = self.addr(inst.srcs[0]), inst.srcs[1]
-            vals = src.elems if isinstance(src, Vector) else (src,)
-            n = BITS[t] // 8
-            for k, v in enumerate(vals):
-                self.mem.write(addr + k * n, t, to_bits(self.read(v, t), t))
-            return
-        if op is Op.RED:
-            addr = self.addr(inst.srcs[0])
-            old = from_bits(self.mem.read(addr, t), t)
-            new = old + self.read(inst.srcs[1], t)
-            self.mem.write(addr, t, to_bits(f32(new) if t == "f32" else new, t))
-            return
+        match op:
+            case Op.LD if inst.space is StateSpace.PARAM:
+                self.write(inst.dsts[0], t, self.params[inst.srcs[0].base])   # the buffer's pointer
+                return
+            case Op.LD:
+                dst, addr = inst.dsts[0], self.addr(inst.srcs[0])
+                regs = dst.elems if isinstance(dst, Vector) else (dst,)
+                n = BITS[t] // 8
+                for k, r in enumerate(regs):
+                    self.regs[r] = self.mem.read(addr + k * n, t)
+                return
+            case Op.ST:
+                addr, src = self.addr(inst.srcs[0]), inst.srcs[1]
+                vals = src.elems if isinstance(src, Vector) else (src,)
+                n = BITS[t] // 8
+                for k, v in enumerate(vals):
+                    self.mem.write(addr + k * n, t, to_bits(self.read(v, t), t))
+                return
+            case Op.RED:
+                addr = self.addr(inst.srcs[0])
+                old = from_bits(self.mem.read(addr, t), t)
+                new = old + self.read(inst.srcs[1], t)
+                self.mem.write(addr, t, to_bits(f32(new) if t == "f32" else new, t))
+                return
+            case Op.CP:
+                if Mod.ASYNC in types and len(inst.srcs) == 3:
+                    dst_a, src_a = self.addr(inst.srcs[0]), self.addr(inst.srcs[1])
+                    for k in range(0, int(inst.srcs[2].value), 4):
+                        self.mem.write(dst_a + k, "b32", self.mem.read(src_a + k, "b32"))
+                return                    # commit_group / wait_group: every copy is already done
+            case Op.CVT if Mod.TF32 in types:
+                bits = to_bits(self.read(inst.srcs[0], "f32"), "f32")
+                if (bits >> 23) & 0xFF != 0xFF:              # round to 10 mantissa bits, ties away
+                    bits = (bits + 0x1000) & 0xFFFFE000
+                self.regs[inst.dsts[0]] = bits
+                return
+            case Op.CVT:
+                # cvt.<rnd>.<dst>.<src>: here only float -> float rounding to an integral value
+                mode = types[0]
+                x = self.read(inst.srcs[0], types[-1])
+                r = {"rni": round, "rmi": math.floor, "rpi": math.ceil, "rzi": math.trunc}[mode](x) \
+                    if math.isfinite(x) else x
+                self.write(inst.dsts[0], types[-2], float(r))
+                return
+            case Op.SETP:
+                cmp = types[0]
+                a, b = (self.read(v, t) for v in inst.srcs)
+                res = {"eq": a == b, "ne": a != b, "lt": a < b, "le": a <= b, "gt": a > b, "ge": a >= b}[cmp]
+                self.write(inst.dsts[0], "pred", res)
+                return
+            case Op.SELP:
+                a, b = (self.read(v, t) for v in inst.srcs[:2])
+                self.write(inst.dsts[0], t, a if self.read(inst.srcs[2], "pred") else b)
+                return
+            case Op.CVTA | Op.MOV:
+                self.write(inst.dsts[0], t, self.read(inst.srcs[0], t))
+                return
 
-        if op is Op.CP:
-            if Mod.ASYNC in types and len(inst.srcs) == 3:
-                dst_a, src_a = self.addr(inst.srcs[0]), self.addr(inst.srcs[1])
-                for k in range(0, int(inst.srcs[2].value), 4):
-                    self.mem.write(dst_a + k, "b32", self.mem.read(src_a + k, "b32"))
-            return                    # commit_group / wait_group: every copy is already done
-
+        # arithmetic: every remaining op writes one register
         dst = inst.dsts[0]
-        if op is Op.CVT and Mod.TF32 in types:
-            bits = to_bits(self.read(inst.srcs[0], "f32"), "f32")
-            if (bits >> 23) & 0xFF != 0xFF:              # round to 10 mantissa bits, ties away
-                bits = (bits + 0x1000) & 0xFFFFE000
-            self.regs[dst] = bits
-            return
-        if op is Op.CVT and t != Mod.TF32:
-            # cvt.<rnd>.<dst>.<src>: here only float -> float rounding to an integral value
-            mode = types[0]
-            x = self.read(inst.srcs[0], types[-1])
-            r = {"rni": round, "rmi": math.floor, "rpi": math.ceil, "rzi": math.trunc}[mode](x) \
-                if math.isfinite(x) else x
-            self.write(dst, types[-2], float(r))
-            return
-        if op is Op.SETP:
-            cmp = types[0]
-            a, b = (self.read(v, t) for v in inst.srcs)
-            res = {"eq": a == b, "ne": a != b, "lt": a < b, "le": a <= b, "gt": a > b, "ge": a >= b}[cmp]
-            self.write(dst, "pred", res)
-            return
-        if op is Op.SELP:
-            a, b = (self.read(v, t) for v in inst.srcs[:2])
-            self.write(dst, t, a if self.read(inst.srcs[2], "pred") else b)
-            return
-        if op is Op.CVTA or op is Op.MOV:
-            self.write(dst, t, self.read(inst.srcs[0], t))
-            return
-
         wide = Mod.WIDE in types
         rt = WIDE[t] if wide else t
         srcs = [self.read(v, t if not (op is Op.MAD and k == 2 and wide) else rt)

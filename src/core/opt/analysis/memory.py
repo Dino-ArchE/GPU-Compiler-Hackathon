@@ -13,7 +13,7 @@ from core.ir import Address, Mod, Op, Param, PtxType, Register, StateSpace, Symb
 
 from ..pass_manager import Analysis, register_analysis
 
-POINTER_ARITH = {Op.ADD, Op.SUB}
+POINTER_TYPES = (PtxType.S64, PtxType.U64, PtxType.B64)
 
 
 class PointerInfo:
@@ -48,17 +48,19 @@ class PointerInfo:
         inst = self.du.single_def(reg)
         if inst is None:
             return None
-        if inst.op is Op.LD and inst.space is StateSpace.PARAM:
-            base = inst.srcs[0].base
-            return base if isinstance(base, Param) else None
-        if inst.op in (Op.CVTA, Op.MOV):
-            return self.root(inst.srcs[0])
-        if inst.op in POINTER_ARITH and inst.ptx_type in (PtxType.S64, PtxType.U64, PtxType.B64):
-            roots = [r for r in (self.root(v) for v in inst.srcs) if r is not None]
-            return roots[0] if len(roots) == 1 else None
-        if inst.op is Op.MAD and Mod.WIDE in inst.types:
-            return self.root(inst.srcs[2])
-        return None
+        match inst.op:
+            case Op.LD if inst.space is StateSpace.PARAM:
+                base = inst.srcs[0].base
+                return base if isinstance(base, Param) else None
+            case Op.CVTA | Op.MOV:
+                return self.root(inst.srcs[0])
+            case Op.ADD | Op.SUB if inst.ptx_type in POINTER_TYPES:      # pointer arithmetic
+                roots = [r for r in (self.root(v) for v in inst.srcs) if r is not None]
+                return roots[0] if len(roots) == 1 else None
+            case Op.MAD if Mod.WIDE in inst.types:
+                return self.root(inst.srcs[2])
+            case _:
+                return None
 
     def is_invariant_load(self, inst):
         """ld whose value cannot change while the kernel runs."""

@@ -159,13 +159,15 @@ def _substitute(value, old, new, vector_imm=True):
 
 
 def _registers(value):
-    if isinstance(value, Register):
-        return [value]
-    if isinstance(value, Address):
-        return _registers(value.base)
-    if isinstance(value, Vector):
-        return [r for e in value.elems for r in _registers(e)]
-    return []
+    match value:
+        case Register():
+            return [value]
+        case Address(base=base):
+            return _registers(base)
+        case Vector(elems=elems):
+            return [r for e in elems for r in _registers(e)]
+        case _:
+            return []
 
 
 def _vec(value):

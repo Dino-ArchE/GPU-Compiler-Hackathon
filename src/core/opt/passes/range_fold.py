@@ -40,23 +40,26 @@ class RangeFold(FunctionPass):
 
     def fold(self, inst, t, rng):
         op, d = inst.op, inst.dsts[0]
-        if op is Op.SETP:
-            a, b = (rng.get(v, t) for v in inst.srcs)
-            res = _decide(Cmp(inst.types[0]), a, b)
-            if res is None:
-                return None
-            zero = Immediate(0, t)
-            return Setp(Cmp.EQ if res else Cmp.NE, t, d, zero, zero)
-        if op in (Op.REM, Op.DIV) and len(inst.srcs) == 2:
-            x, c = rng.get(inst.srcs[0], t), rng.constant(inst.srcs[1], t)
-            if c is not None and c > 0 and x.nonneg and x.hi < c:
-                return _mov(d, t, inst.srcs[0] if op is Op.REM else Immediate(0, t))
-        if op in (Op.MIN, Op.MAX):
-            a, b = (rng.get(v, t) for v in inst.srcs)
-            if a.hi <= b.lo:
-                return _mov(d, t, inst.srcs[0] if op is Op.MIN else inst.srcs[1])
-            if b.hi <= a.lo:
-                return _mov(d, t, inst.srcs[1] if op is Op.MIN else inst.srcs[0])
+        # an op-specific rule returns when it applies; otherwise control leaves the match and
+        # the general rule below (a known-constant result) still gets its chance
+        match op:
+            case Op.SETP:
+                a, b = (rng.get(v, t) for v in inst.srcs)
+                res = _decide(Cmp(inst.types[0]), a, b)
+                if res is None:
+                    return None
+                zero = Immediate(0, t)
+                return Setp(Cmp.EQ if res else Cmp.NE, t, d, zero, zero)
+            case Op.REM | Op.DIV if len(inst.srcs) == 2:
+                x, c = rng.get(inst.srcs[0], t), rng.constant(inst.srcs[1], t)
+                if c is not None and c > 0 and x.nonneg and x.hi < c:
+                    return _mov(d, t, inst.srcs[0] if op is Op.REM else Immediate(0, t))
+            case Op.MIN | Op.MAX:
+                a, b = (rng.get(v, t) for v in inst.srcs)
+                if a.hi <= b.lo:
+                    return _mov(d, t, inst.srcs[0] if op is Op.MIN else inst.srcs[1])
+                if b.hi <= a.lo:
+                    return _mov(d, t, inst.srcs[1] if op is Op.MIN else inst.srcs[0])
         if op is not Op.MOV and Mod.WIDE not in inst.types:
             c = rng.constant(d, t)
             if c is not None:
@@ -66,20 +69,22 @@ class RangeFold(FunctionPass):
 
 def _decide(cmp, a, b):
     """The comparison's value if it is the same for every a in [a.lo, a.hi], b in [b.lo, b.hi]."""
-    if cmp is Cmp.LT:
-        return True if a.hi < b.lo else False if a.lo >= b.hi else None
-    if cmp is Cmp.LE:
-        return True if a.hi <= b.lo else False if a.lo > b.hi else None
-    if cmp is Cmp.GT:
-        return _decide(Cmp.LT, b, a)
-    if cmp is Cmp.GE:
-        return _decide(Cmp.LE, b, a)
-    if cmp is Cmp.EQ:
-        return True if a.exact and b.exact and a.lo == b.lo else False if a.hi < b.lo or b.hi < a.lo else None
-    if cmp is Cmp.NE:
-        r = _decide(Cmp.EQ, a, b)
-        return None if r is None else not r
-    return None
+    match cmp:
+        case Cmp.LT:
+            return True if a.hi < b.lo else False if a.lo >= b.hi else None
+        case Cmp.LE:
+            return True if a.hi <= b.lo else False if a.lo > b.hi else None
+        case Cmp.GT:
+            return _decide(Cmp.LT, b, a)
+        case Cmp.GE:
+            return _decide(Cmp.LE, b, a)
+        case Cmp.EQ:
+            return True if a.exact and b.exact and a.lo == b.lo else False if a.hi < b.lo or b.hi < a.lo else None
+        case Cmp.NE:
+            r = _decide(Cmp.EQ, a, b)
+            return None if r is None else not r
+        case _:
+            return None
 
 
 def _mov(d, t, v):

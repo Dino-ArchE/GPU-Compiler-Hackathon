@@ -58,13 +58,21 @@ def _compare(op, a, b):
 
 def _fold(op, a, b):
     """Constant-fold two int literals with C semantics (/ and % truncate toward zero)."""
-    if op in ("/", "//"):
-        return int(a / b)
-    if op == "^":
-        return a ^ b
-    if op == "%":
-        return a - int(a / b) * b
-    return {"+": a + b, "-": a - b, "*": a * b}[op]
+    match op:
+        case "/" | "//":
+            return int(a / b)
+        case "%":
+            return a - int(a / b) * b
+        case "^":
+            return a ^ b
+        case "+":
+            return a + b
+        case "-":
+            return a - b
+        case "*":
+            return a * b
+        case _:
+            raise KeyError(op)
 
 
 class CodeGen:
