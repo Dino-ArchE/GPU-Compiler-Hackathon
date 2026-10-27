@@ -13,3 +13,7 @@ expressions_hidden.py
 # local editor / generated output
 .mcp.json
 problems/**/*.ptx
+
+# slides for the submission video: kept local
+*.pptx
+slides/
